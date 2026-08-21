@@ -60,6 +60,33 @@ class _MemoryKeyStore:
         return dict(self._data)
 
 
+async def async_make_client(
+    hass: HomeAssistant, host: str, client_key: str | None, storage: _MemoryKeyStore
+) -> WebOsClient:
+    """Build a bscpylgtv client with the canonical manifest, but NOT connected.
+
+    bscpylgtv.WebOsClient.__init__ builds its SSL context synchronously
+    (ssl.load_default_certs / set_default_verify_paths) which is blocking file
+    I/O; HA forbids that in the event loop. So construct the object in an
+    executor, then run the async storage init and apply the manifest in the loop.
+    Mirrors WebOsClient.create() (which is __init__ + async_init) but off-loop.
+    """
+
+    def _construct() -> WebOsClient:
+        return WebOsClient(
+            host,
+            client_key=client_key,     # None -> fresh pair; else reuse configured key
+            key_file_path=None,         # do not touch the sqlite key store
+            storage=storage,
+            states=[],                  # sec.5: avoid the subscription/static-state cascade
+        )
+
+    client = await hass.async_add_executor_job(_construct)
+    await client.async_init()
+    apply_manifest(client)              # sec.2: MUST be before connect()
+    return client
+
+
 class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Owns the bscpylgtv client and polls the TV."""
 
@@ -93,15 +120,12 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _build_client(self) -> WebOsClient:
         """Create a bscpylgtv client with the manifest patched, but not connected."""
-        client = await WebOsClient.create(
+        return await async_make_client(
+            self.hass,
             self.host,
-            client_key=self.client_key,     # None -> fresh pair; else reuse configured key
-            key_file_path=None,             # do not touch the sqlite key store
-            storage=_MemoryKeyStore(self.host, self.client_key),
-            states=[],                      # sec.5: avoid the subscription/static-state cascade
+            self.client_key,
+            _MemoryKeyStore(self.host, self.client_key),
         )
-        apply_manifest(client)              # sec.2: MUST be before connect()
-        return client
 
     async def _connect_with_retry(self) -> WebOsClient:
         """Bounded connect loop that tolerates a cold/booting TV (sec.4)."""

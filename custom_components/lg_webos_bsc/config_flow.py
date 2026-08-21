@@ -27,10 +27,8 @@ from homeassistant.config_entries import (
     OptionsFlow,
     ConfigEntry,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
-
-from bscpylgtv import WebOsClient
 
 from .const import (
     CONF_CLIENT_KEY,
@@ -48,8 +46,7 @@ from .const import (
     PAIR_MODE_EXISTING,
     PAIR_MODE_FRESH,
 )
-from .coordinator import _MemoryKeyStore
-from .patch import apply_manifest
+from .coordinator import _MemoryKeyStore, async_make_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -84,7 +81,9 @@ class PairingFailed(Exception):
     """Fresh PROMPT pairing did not complete (prompt not accepted in time)."""
 
 
-async def _connect(host: str, key: str | None, wait: float) -> tuple[str | None, str | None]:
+async def _connect(
+    hass: HomeAssistant, host: str, key: str | None, wait: float
+) -> tuple[str | None, str | None]:
     """Connect once (bounded), map failures to typed errors.
 
     Returns (client_key, current_app_id). client_key is the freshly-paired key
@@ -93,14 +92,7 @@ async def _connect(host: str, key: str | None, wait: float) -> tuple[str | None,
     deadline = time.monotonic() + wait
     last_exc: Exception | None = None
     while time.monotonic() < deadline:
-        client = await WebOsClient.create(
-            host,
-            client_key=key,
-            key_file_path=None,
-            storage=_MemoryKeyStore(host, key),
-            states=[],
-        )
-        apply_manifest(client)
+        client = await async_make_client(hass, host, key, _MemoryKeyStore(host, key))
         try:
             await client.connect()
         except Exception as exc:  # noqa: BLE001
@@ -172,7 +164,7 @@ class LgWebosBscConfigFlow(ConfigFlow, domain=DOMAIN):
             key = user_input[CONF_CLIENT_KEY].strip()
             try:
                 await self.async_set_unique_id_for(host, user_input.get(CONF_MAC))
-                _, _ = await _connect(host, key, EXISTING_KEY_WAIT)
+                _, _ = await _connect(self.hass, host, key, EXISTING_KEY_WAIT)
             except ManifestRejected:
                 errors["base"] = "manifest_rejected"
             except RestrictedKey:
@@ -204,7 +196,7 @@ class LgWebosBscConfigFlow(ConfigFlow, domain=DOMAIN):
             host = user_input[CONF_HOST].strip()
             try:
                 await self.async_set_unique_id_for(host, user_input.get(CONF_MAC))
-                new_key, _ = await _connect(host, None, FRESH_PAIR_WAIT)
+                new_key, _ = await _connect(self.hass, host, None, FRESH_PAIR_WAIT)
             except ManifestRejected:
                 errors["base"] = "manifest_rejected"
             except PairingFailed:
