@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "LG webOS (bscpylgtv)",
+        "description": "Choose how to authenticate with the TV. Pairing fresh is recommended and grants full control on webOS 26 (confirmed). Use an existing client key only if you want to reuse a key you already have (e.g. from LGTVCompanion).",
+        "menu_options": {
+          "existing_key": "Use an existing client key (grandfathered)",
+          "fresh": "Pair fresh (accept the prompt on the TV)"
+        }
+      },
+      "existing_key": {
+        "title": "Existing client key",
+        "description": "Enter the TV's IP and a known-good client key (for example the one extracted from LGTVCompanion's config.json).",
+        "data": {
+          "host": "Host / IP address",
+          "client_key": "Client key",
+          "mac": "MAC address (optional, for Wake-on-LAN)",
+          "name": "Name (optional)"
+        }
+      },
+      "fresh": {
+        "title": "Pair fresh",
+        "description": "Enter the TV's IP, then watch the TV: accept the pairing prompt when it appears (you have about 30 seconds).",
+        "data": {
+          "host": "Host / IP address",
+          "mac": "MAC address (optional, for Wake-on-LAN)",
+          "name": "Name (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the TV. Make sure it is on and on the network.",
+      "manifest_rejected": "The TV rejected the pairing manifest (403 blacklisted). This is a bug in the manifest replacement — please report it.",
+      "restricted_key": "The key authenticated but was denied a core permission (401). This is a restricted/freshly-paired key — use an existing full-permission (grandfathered) key. See README sec.3a.",
+      "pairing_failed": "Fresh pairing did not complete. Make sure you accepted the prompt on the TV, then try again.",
+      "unknown": "Unexpected error. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This TV is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "LG webOS options",
+        "data": {
+          "poll_interval": "Polling interval (seconds)",
+          "enable_input_switching": "Enable HDMI input switching (off by default — can disturb the soundbar audio path)",
+          "mac": "MAC address (for Wake-on-LAN)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "select": {
+      "game_genre": {
+        "name": "Game Optimizer genre"
+      }
+    }
+  }
+}
