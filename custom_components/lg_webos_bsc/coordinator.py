@@ -29,6 +29,7 @@ from bscpylgtv import WebOsClient
 from .const import (
     GAME_GENRE_CATEGORY,
     GAME_GENRE_KEY,
+    PICTURE_CATEGORY,
 )
 from .patch import apply_manifest
 
@@ -221,6 +222,18 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["apps"] = apps
         data["inputs"] = inputs
 
+        # system_info reads on this firmware (software_info 401s); cache it once
+        # for the model name / diagnostics.
+        system_info = prev.get("system_info") or {}
+        if not system_info:
+            system_info = await self._safe_call(client.get_system_info) or {}
+        data["system_info"] = system_info
+
+        # Picture settings DO read back here (the 4 default keys); poll them so the
+        # number sliders show real values. Reuse the previous snapshot on failure.
+        pic = await self._safe_call(client.get_picture_settings)
+        data["picture_settings"] = pic if pic is not None else (prev.get("picture_settings") or {})
+
         data["game_genre"] = self.last_game_genre
         data["picture_mode"] = self.last_picture_mode
         return data
@@ -236,6 +249,8 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sound_output": None,
             "apps": prev.get("apps") or [],
             "inputs": prev.get("inputs") or [],
+            "system_info": prev.get("system_info") or {},
+            "picture_settings": prev.get("picture_settings") or {},
             "game_genre": self.last_game_genre,
             "picture_mode": self.last_picture_mode,
         }
@@ -307,6 +322,22 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_picture_mode = mode
         base = dict(self.data) if self.data else {}
         base["picture_mode"] = mode
+        self.async_set_updated_data(base)
+
+    async def async_set_picture_setting(self, key: str, value: int) -> None:
+        """Write one picture setting and optimistically reflect it.
+
+        The immediate refresh in async_command re-reads get_picture_settings (which
+        works here), so the slider confirms the real value; the optimistic write
+        just covers the brief window before that read lands.
+        """
+        await self.async_command(
+            lambda c: c.set_settings(PICTURE_CATEGORY, {key: value})
+        )
+        base = dict(self.data) if self.data else {}
+        ps = dict(base.get("picture_settings") or {})
+        ps[key] = str(value)
+        base["picture_settings"] = ps
         self.async_set_updated_data(base)
 
     async def async_set_settings(self, category: str, settings: dict) -> Any:

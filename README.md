@@ -92,6 +92,13 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
   what's playing).
 - **`button`** — Screen off / Screen on / Screensaver / Reboot / Reboot (soft).
   These are one-shot actions that do not need the input socket.
+- **`number` · Picture** — Backlight / Contrast / Brightness / Color. These read
+  back real values via `get_picture_settings` and write via
+  `set_settings("picture", …)`. (Sharpness / OLED light are omitted — including
+  them 500s the read on this firmware.)
+- **`sensor` · Model** (diagnostic, disabled by default) — model name + serial
+  from `get_system_info` (`get_software_info` 401s on this firmware, so version
+  sensors aren't available).
 
 ### Services
 
@@ -143,8 +150,12 @@ be playing over eARC).
 | `power_off` | **CONFIRMED** (verified in HA) |
 | Reads (current app, volume, sound output) | **CONFIRMED** |
 | Power state incl. standby → off | **CONFIRMED** (fixed after live report) |
-| Power‑on (Wake‑on‑LAN) | **UNCONFIRMED** — needs MAC in options + “Mobile TV On” |
-| HDMI input switching (`set_input`) | **UNCONFIRMED** — off by default (opt‑in) |
+| Power‑on (Wake‑on‑LAN) | **NOT WORKING here** — environmental (HA can't broadcast to the TV subnet); official webOS method also fails, a phone WOL app works |
+| HDMI input switching (`set_input`) | **CONFIRMED** (opt‑in; verified live) |
+| Picture settings **read** (backlight/contrast/brightness/color) | **CONFIRMED** via `get_picture_settings` |
+| Picture settings read incl. sharpness/oled_light | **NOT AVAILABLE** — 500s the whole batch |
+| `get_system_info` (model/serial) | **CONFIRMED** |
+| `get_software_info` (sw version) | **NOT AVAILABLE** — 401 |
 | Game genre **read‑back** | **NOT AVAILABLE** — `getSystemSettings` 500s; the select shows the last value set this session |
 
 ---
@@ -199,7 +210,8 @@ custom_components/lg_webos_bsc/
   entity.py          shared device grouping
   media_player.py    power/volume/mute/source + raw services
   select.py          Game Optimizer genre, picture mode
-  sensor.py          audio output
+  sensor.py          audio output, model
+  number.py          picture: backlight/contrast/brightness/color
   button.py          screen on/off, screensaver, reboot
   services.yaml      launch_app / set_settings / command / luna
   strings.json  translations/en.json

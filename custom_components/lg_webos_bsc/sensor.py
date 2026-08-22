@@ -7,6 +7,7 @@ HDMI ARC/eARC, Bluetooth, or the TV speakers.
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -22,7 +23,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up sensors from a config entry."""
-    async_add_entities([LgWebosBscSoundOutputSensor(entry.runtime_data, entry)])
+    async_add_entities(
+        [
+            LgWebosBscSoundOutputSensor(entry.runtime_data, entry),
+            LgWebosBscModelSensor(entry.runtime_data, entry),
+        ]
+    )
 
 
 class LgWebosBscSoundOutputSensor(LgWebosBscEntity, SensorEntity):
@@ -51,3 +57,31 @@ class LgWebosBscSoundOutputSensor(LgWebosBscEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, str]:
         raw = (self.coordinator.data or {}).get("sound_output")
         return {"raw_sound_output": raw} if raw else {}
+
+
+class LgWebosBscModelSensor(LgWebosBscEntity, SensorEntity):
+    """TV model name (from get_system_info; software_info 401s on this firmware)."""
+
+    _attr_translation_key = "model"
+    _attr_icon = "mdi:television"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(
+        self, coordinator: LgWebosBscCoordinator, entry: LgWebosBscConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, key="model")
+
+    @property
+    def native_value(self) -> str | None:
+        return ((self.coordinator.data or {}).get("system_info") or {}).get("modelName")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        info = (self.coordinator.data or {}).get("system_info") or {}
+        attrs = {}
+        if info.get("serialNumber"):
+            attrs["serial_number"] = info["serialNumber"]
+        if info.get("receiverType"):
+            attrs["receiver_type"] = info["receiverType"]
+        return attrs

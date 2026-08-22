@@ -66,6 +66,20 @@ PICTURE_MODE_OPTIONS = [
     "expert2",
 ]
 
+# Picture number sliders. Only the 4 keys below read back on this firmware --
+# get_picture_settings with sharpness/oled_light 500s the whole batch, so we read
+# exactly these (they are also bscpylgtv's get_picture_settings default keys).
+# Writes go through set_settings("picture", {key: value}) via the alert bridge.
+PICTURE_CATEGORY = "picture"
+PICTURE_READ_KEYS = ["contrast", "backlight", "brightness", "color"]
+# key -> (min, max) for the number entities.
+PICTURE_NUMBERS = {
+    "backlight": (0, 100),
+    "contrast": (0, 100),
+    "brightness": (0, 100),
+    "color": (0, 100),
+}
+
 # App ids that represent physical inputs rather than launchable apps; used to
 # split the media_player source list sensibly.
 HDMI_APP_PREFIX = "com.webos.app.hdmi"

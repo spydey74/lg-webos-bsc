@@ -64,7 +64,16 @@
     "sensor": {
       "sound_output": {
         "name": "Audio output"
+      },
+      "model": {
+        "name": "Model"
       }
+    },
+    "number": {
+      "picture_backlight": { "name": "Backlight" },
+      "picture_contrast": { "name": "Contrast" },
+      "picture_brightness": { "name": "Brightness" },
+      "picture_color": { "name": "Color" }
     },
     "button": {
       "screen_off": { "name": "Screen off" },

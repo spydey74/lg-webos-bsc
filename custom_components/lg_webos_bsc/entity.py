@@ -25,10 +25,16 @@ class LgWebosBscEntity(CoordinatorEntity[LgWebosBscCoordinator]):
         self.entry = entry
         device_id = entry.unique_id or entry.entry_id
         self._attr_unique_id = f"{device_id}_{key}"
+        # Use the real model name once system_info has been read (software_info
+        # 401s on this firmware, but system_info reads fine).
+        system_info = (coordinator.data or {}).get("system_info") or {}
+        model = system_info.get("modelName") or "webOS TV (bscpylgtv)"
+        serial = system_info.get("serialNumber")
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_id)},
             name=entry.title,
             manufacturer="LG Electronics",
-            model="webOS TV (bscpylgtv)",
+            model=model,
+            serial_number=serial,
             configuration_url=f"http://{entry.data.get(CONF_HOST)}",
         )
