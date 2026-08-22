@@ -41,6 +41,7 @@ class LgWebosBscGameGenreSelect(LgWebosBscEntity, SelectEntity):
         self, coordinator: LgWebosBscCoordinator, entry: LgWebosBscConfigEntry
     ) -> None:
         super().__init__(coordinator, entry, key="game_genre")
+        self._pending: str | None = None
 
     @property
     def available(self) -> bool:
@@ -50,11 +51,22 @@ class LgWebosBscGameGenreSelect(LgWebosBscEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         # gameGenre cannot be read back reliably (getSystemSettings 500s on this
-        # firmware), so we report the last value we set this session, if any.
+        # firmware), so we report the value being set (optimistic) or the last
+        # value set this session.
+        if self._pending in self._attr_options:
+            return self._pending
         genre = (self.coordinator.data or {}).get("game_genre")
         if genre in self._attr_options:
             return genre
         return None
 
     async def async_select_option(self, option: str) -> None:
-        await self.coordinator.async_set_game_genre(option)
+        # Show the new value instantly, then send it; the coordinator pushes the
+        # confirmed value into its data so the final state matches.
+        self._pending = option
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_set_game_genre(option)
+        finally:
+            self._pending = None
+        self.async_write_ha_state()

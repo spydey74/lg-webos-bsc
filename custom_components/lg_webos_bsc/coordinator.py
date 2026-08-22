@@ -250,10 +250,15 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # --------------------------------------------------------------- commands
 
     async def async_command(self, coro_factory) -> Any:
-        """Run a client command with a connection guarantee, then refresh."""
+        """Run a client command with a connection guarantee, then refresh now.
+
+        Uses async_refresh() (immediate) rather than async_request_refresh()
+        (debounced ~10s) so volume/mute/source changes reflect in the UI right
+        away instead of lagging up to the debounce cooldown.
+        """
         client = await self.async_ensure_connected()
         result = await coro_factory(client)
-        await self.async_request_refresh()
+        await self.async_refresh()
         return result
 
     async def async_launch_app(self, app_id: str) -> None:
@@ -272,9 +277,15 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_command(lambda c: c.power_off())
 
     async def async_set_game_genre(self, genre: str) -> None:
-        """Set Game Optimizer genre via bscpylgtv.set_settings (alert bridge)."""
-        await self.async_command(
-            lambda c: c.set_settings(GAME_GENRE_CATEGORY, {GAME_GENRE_KEY: genre})
-        )
+        """Set Game Optimizer genre via bscpylgtv.set_settings (alert bridge).
+
+        gameGenre cannot be read back (getSystemSettings 500s), so we do NOT
+        poll after: we push the new value straight into the cached data and
+        notify listeners, which makes the select reflect it immediately.
+        """
+        client = await self.async_ensure_connected()
+        await client.set_settings(GAME_GENRE_CATEGORY, {GAME_GENRE_KEY: genre})
         self.last_game_genre = genre
-        self.async_update_listeners()
+        base = dict(self.data) if self.data else {}
+        base["game_genre"] = genre
+        self.async_set_updated_data(base)
