@@ -50,6 +50,22 @@ GAME_GENRE_OPTIONS = [
     "Sports",
 ]
 
+# Picture mode (set_system_picture_mode, webOS v9+). These are the raw API
+# values. Valid options depend on the current content (some HDR/Dolby modes only
+# apply to HDR sources), so setting one may fail depending on what's playing --
+# surfaced as an error rather than silently. UNCONFIRMED on this TV; SDR core set.
+PICTURE_MODE_OPTIONS = [
+    "standard",
+    "vivid",
+    "eco",
+    "cinema",
+    "sports",
+    "game",
+    "filmMaker",
+    "expert1",
+    "expert2",
+]
+
 # App ids that represent physical inputs rather than launchable apps; used to
 # split the media_player source list sensibly.
 HDMI_APP_PREFIX = "com.webos.app.hdmi"

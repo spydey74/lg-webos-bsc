@@ -56,11 +56,54 @@
     "select": {
       "game_genre": {
         "name": "Game Optimizer genre"
+      },
+      "picture_mode": {
+        "name": "Picture mode"
       }
     },
     "sensor": {
       "sound_output": {
         "name": "Audio output"
+      }
+    },
+    "button": {
+      "screen_off": { "name": "Screen off" },
+      "screen_on": { "name": "Screen on" },
+      "screensaver": { "name": "Screensaver" },
+      "reboot": { "name": "Reboot" },
+      "reboot_soft": { "name": "Reboot (soft)" }
+    }
+  },
+  "services": {
+    "launch_app": {
+      "name": "Launch app",
+      "description": "Launch an app on the TV by its app id.",
+      "fields": {
+        "app_id": { "name": "App id", "description": "The webOS app id, e.g. com.webos.app.hdmi3 or netflix." }
+      }
+    },
+    "set_settings": {
+      "name": "Set settings",
+      "description": "Write a setSystemSettings category via the alert bridge.",
+      "fields": {
+        "category": { "name": "Category", "description": "Settings category, e.g. picture, other, sound." },
+        "settings": { "name": "Settings", "description": "Key/value map to write." }
+      }
+    },
+    "command": {
+      "name": "Send command (raw SSAP)",
+      "description": "Send a raw SSAP request and return the response.",
+      "fields": {
+        "uri": { "name": "URI", "description": "SSAP endpoint without the ssap:// prefix, e.g. audio/getVolume." },
+        "payload": { "name": "Payload", "description": "Optional request payload." }
+      }
+    },
+    "luna": {
+      "name": "Luna call (raw, via alert bridge)",
+      "description": "Fire a protected luna:// call via the createAlert/closeAlert bridge.",
+      "fields": {
+        "uri": { "name": "URI", "description": "Luna URI without the luna:// prefix." },
+        "params": { "name": "Params", "description": "Parameters for the luna call." }
       }
     }
   }

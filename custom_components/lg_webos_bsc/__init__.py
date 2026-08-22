@@ -21,7 +21,12 @@ from .coordinator import LgWebosBscCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.MEDIA_PLAYER, Platform.SELECT, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.MEDIA_PLAYER,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.BUTTON,
+]
 
 type LgWebosBscConfigEntry = ConfigEntry[LgWebosBscCoordinator]
 

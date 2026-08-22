@@ -1,0 +1,89 @@
+launch_app:
+  name: Launch app
+  description: Launch an app on the TV by its app id.
+  target:
+    entity:
+      integration: lg_webos_bsc
+      domain: media_player
+  fields:
+    app_id:
+      name: App id
+      description: The webOS app id, e.g. com.webos.app.hdmi3 or netflix.
+      required: true
+      example: "com.webos.app.hdmi3"
+      selector:
+        text:
+
+set_settings:
+  name: Set settings
+  description: >-
+    Write a setSystemSettings category via the alert bridge (the same path the
+    Game Optimizer genre uses). The result is not returned over the socket;
+    confirm by effect.
+  target:
+    entity:
+      integration: lg_webos_bsc
+      domain: media_player
+  fields:
+    category:
+      name: Category
+      description: Settings category, e.g. picture, other, sound.
+      required: true
+      example: "picture"
+      selector:
+        text:
+    settings:
+      name: Settings
+      description: Key/value map to write.
+      required: true
+      example: '{"pictureMode": "game"}'
+      selector:
+        object:
+
+command:
+  name: Send command (raw SSAP)
+  description: Send a raw SSAP request and return the response.
+  target:
+    entity:
+      integration: lg_webos_bsc
+      domain: media_player
+  fields:
+    uri:
+      name: URI
+      description: SSAP endpoint without the ssap:// prefix, e.g. audio/getVolume.
+      required: true
+      example: "audio/getVolume"
+      selector:
+        text:
+    payload:
+      name: Payload
+      description: Optional request payload.
+      required: false
+      example: '{"volume": 10}'
+      selector:
+        object:
+
+luna:
+  name: Luna call (raw, via alert bridge)
+  description: >-
+    Fire a protected luna:// call via the createAlert/closeAlert bridge. The
+    call's result is not returned over the socket; confirm by effect.
+  target:
+    entity:
+      integration: lg_webos_bsc
+      domain: media_player
+  fields:
+    uri:
+      name: URI
+      description: Luna URI without the luna:// prefix.
+      required: true
+      example: "com.webos.settingsservice/setSystemSettings"
+      selector:
+        text:
+    params:
+      name: Params
+      description: Parameters for the luna call.
+      required: true
+      example: '{"category": "other", "settings": {"gameGenre": "RTS"}}'
+      selector:
+        object:

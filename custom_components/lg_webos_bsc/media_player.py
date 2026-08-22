@@ -5,13 +5,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.components.media_player import (
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_platform
+import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import LgWebosBscConfigEntry
@@ -33,8 +37,33 @@ async def async_setup_entry(
     entry: LgWebosBscConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the media player from a config entry."""
+    """Set up the media player and register raw services."""
     async_add_entities([LgWebosBscMediaPlayer(entry.runtime_data, entry)])
+
+    # Raw passthrough services (mirror lg_webos_net.py verbs). Targeted at the
+    # media_player entity of this integration.
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "launch_app",
+        {vol.Required("app_id"): cv.string},
+        "async_service_launch_app",
+    )
+    platform.async_register_entity_service(
+        "set_settings",
+        {vol.Required("category"): cv.string, vol.Required("settings"): dict},
+        "async_service_set_settings",
+    )
+    platform.async_register_entity_service(
+        "command",
+        {vol.Required("uri"): cv.string, vol.Optional("payload"): dict},
+        "async_service_command",
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    platform.async_register_entity_service(
+        "luna",
+        {vol.Required("uri"): cv.string, vol.Required("params"): dict},
+        "async_service_luna",
+    )
 
 
 class LgWebosBscMediaPlayer(LgWebosBscEntity, MediaPlayerEntity):
@@ -214,3 +243,20 @@ class LgWebosBscMediaPlayer(LgWebosBscEntity, MediaPlayerEntity):
                 await self.coordinator.async_set_input(str(dev.get("id")))
                 return
         raise ServiceValidationError(f"Unknown source: {source}")
+
+    # ---------------------------------------------------------------- services
+
+    async def async_service_launch_app(self, app_id: str) -> None:
+        await self.coordinator.async_launch_app(app_id)
+
+    async def async_service_set_settings(self, category: str, settings: dict) -> None:
+        await self.coordinator.async_set_settings(category, settings)
+
+    async def async_service_command(self, uri: str, payload: dict | None = None) -> dict:
+        """Raw SSAP request, e.g. uri='audio/getVolume'. Returns the response."""
+        result = await self.coordinator.async_raw_request(uri, payload)
+        return {"response": result}
+
+    async def async_service_luna(self, uri: str, params: dict) -> None:
+        """Raw protected luna call via the alert bridge (fires on close, no result)."""
+        await self.coordinator.async_luna(uri, params)

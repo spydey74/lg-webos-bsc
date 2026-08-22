@@ -132,9 +132,10 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.mac = mac
         self._client: WebOsClient | None = None
         self._connect_lock = asyncio.Lock()
-        # We cannot reliably read gameGenre back (getSystemSettings 500s on this
-        # firmware), so track the last value we set for optimistic select state.
+        # We cannot reliably read some settings back (getSystemSettings 500s on
+        # this firmware), so track the last value we set for optimistic state.
         self.last_game_genre: str | None = None
+        self.last_picture_mode: str | None = None
 
     # ------------------------------------------------------------------ client
 
@@ -221,6 +222,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["inputs"] = inputs
 
         data["game_genre"] = self.last_game_genre
+        data["picture_mode"] = self.last_picture_mode
         return data
 
     def _offline_data(self) -> dict[str, Any]:
@@ -235,6 +237,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "apps": prev.get("apps") or [],
             "inputs": prev.get("inputs") or [],
             "game_genre": self.last_game_genre,
+            "picture_mode": self.last_picture_mode,
         }
 
     async def _safe_call(self, func, *args):
@@ -297,6 +300,30 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_power_off(self) -> None:
         await self.async_command(lambda c: c.power_off())
+
+    async def async_set_picture_mode(self, mode: str) -> None:
+        """Set picture mode (webOS v9+ set_system_picture_mode)."""
+        await self.async_command(lambda c: c.set_system_picture_mode(mode))
+        self.last_picture_mode = mode
+        base = dict(self.data) if self.data else {}
+        base["picture_mode"] = mode
+        self.async_set_updated_data(base)
+
+    async def async_set_settings(self, category: str, settings: dict) -> Any:
+        """Raw setSystemSettings via the alert bridge (bscpylgtv.set_settings)."""
+        return await self.async_command(lambda c: c.set_settings(category, settings))
+
+    async def async_raw_request(self, uri: str, payload: dict | None = None) -> Any:
+        """Raw SSAP request passthrough (e.g. 'audio/getVolume')."""
+        return await self.async_command(lambda c: c.request(uri, payload or {}))
+
+    async def async_luna(self, uri: str, params: dict) -> Any:
+        """Raw protected luna call via the alert bridge (bscpylgtv.luna_request)."""
+        return await self.async_command(lambda c: c.luna_request(uri, params))
+
+    async def async_button(self, method_name: str) -> None:
+        """Call a no-arg client method by name (used by button entities)."""
+        await self.async_command(lambda c: getattr(c, method_name)())
 
     async def async_set_game_genre(self, genre: str) -> None:
         """Set Game Optimizer genre via bscpylgtv.set_settings (alert bridge).

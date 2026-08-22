@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import LgWebosBscConfigEntry
-from .const import GAME_GENRE_OPTIONS
+from .const import GAME_GENRE_OPTIONS, PICTURE_MODE_OPTIONS
 from .coordinator import LgWebosBscCoordinator
 from .entity import LgWebosBscEntity
 
@@ -27,7 +27,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up select entities from a config entry."""
-    async_add_entities([LgWebosBscGameGenreSelect(entry.runtime_data, entry)])
+    async_add_entities(
+        [
+            LgWebosBscGameGenreSelect(entry.runtime_data, entry),
+            LgWebosBscPictureModeSelect(entry.runtime_data, entry),
+        ]
+    )
 
 
 class LgWebosBscGameGenreSelect(LgWebosBscEntity, SelectEntity):
@@ -67,6 +72,44 @@ class LgWebosBscGameGenreSelect(LgWebosBscEntity, SelectEntity):
         self.async_write_ha_state()
         try:
             await self.coordinator.async_set_game_genre(option)
+        finally:
+            self._pending = None
+        self.async_write_ha_state()
+
+
+class LgWebosBscPictureModeSelect(LgWebosBscEntity, SelectEntity):
+    """Picture mode selector (set_system_picture_mode, webOS v9+)."""
+
+    _attr_translation_key = "picture_mode"
+    _attr_icon = "mdi:image-multiple"
+    _attr_options = PICTURE_MODE_OPTIONS
+    _attr_entity_registry_enabled_default = False  # advanced/optional
+
+    def __init__(
+        self, coordinator: LgWebosBscCoordinator, entry: LgWebosBscConfigEntry
+    ) -> None:
+        super().__init__(coordinator, entry, key="picture_mode")
+        self._pending: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool((self.coordinator.data or {}).get("connected"))
+
+    @property
+    def current_option(self) -> str | None:
+        # Picture mode can't be read back reliably here; report optimistic/last-set.
+        if self._pending in self._attr_options:
+            return self._pending
+        mode = (self.coordinator.data or {}).get("picture_mode")
+        if mode in self._attr_options:
+            return mode
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        self._pending = option
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_set_picture_mode(option)
         finally:
             self._pending = None
         self.async_write_ha_state()

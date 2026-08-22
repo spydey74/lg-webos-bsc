@@ -87,6 +87,24 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
 - **`sensor` · Audio output** — shows the current sound output (HDMI ARC/eARC,
   Bluetooth, TV speakers, optical, …). webOS reports `external_arc` for both ARC
   and eARC; the raw value is available as the `raw_sound_output` attribute.
+- **`select` · Picture mode** — `set_system_picture_mode` (disabled by default;
+  some HDR/Dolby modes only apply to HDR content, so a set may fail depending on
+  what's playing).
+- **`button`** — Screen off / Screen on / Screensaver / Reboot / Reboot (soft).
+  These are one-shot actions that do not need the input socket.
+
+### Services
+
+Raw passthroughs (mirror `lg_webos_net.py`'s verbs), targeted at the TV's
+`media_player`:
+
+- `lg_webos_bsc.launch_app` — launch an app by id.
+- `lg_webos_bsc.set_settings` — write a `setSystemSettings` category via the
+  alert bridge (e.g. `category: picture`, `settings: {pictureMode: game}`).
+- `lg_webos_bsc.command` — raw SSAP request (e.g. `uri: audio/getVolume`);
+  returns the response.
+- `lg_webos_bsc.luna` — raw protected luna call via the alert bridge (fires on
+  close; no result returned).
 
 ### Power‑on (Wake‑on‑LAN)
 
@@ -179,10 +197,14 @@ custom_components/lg_webos_bsc/
   coordinator.py     client creation/connect/poll, in‑memory key store (sec.3/4/5)
   config_flow.py     fresh‑pair AND paste‑existing‑key paths (sec.3a)
   entity.py          shared device grouping
-  media_player.py    power/volume/mute/source
-  select.py          Game Optimizer genre
+  media_player.py    power/volume/mute/source + raw services
+  select.py          Game Optimizer genre, picture mode
+  sensor.py          audio output
+  button.py          screen on/off, screensaver, reboot
+  services.yaml      launch_app / set_settings / command / luna
   strings.json  translations/en.json
 tools/
-  webos26_decision_gate_probe.py   the sec.3a test — run this first
+  webos26_decision_gate_probe.py   the sec.3a test — run first
+  get_picture_settings_probe.py    phase‑2 read gate (picture/sw-info reads)
 hacs.json  README.md
 ```
