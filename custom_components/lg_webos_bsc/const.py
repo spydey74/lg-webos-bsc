@@ -53,3 +53,19 @@ GAME_GENRE_OPTIONS = [
 # App ids that represent physical inputs rather than launchable apps; used to
 # split the media_player source list sensibly.
 HDMI_APP_PREFIX = "com.webos.app.hdmi"
+
+# Sound output (audio) -> friendly label. webOS reports "external_arc" for both
+# ARC and eARC. Unknown values fall through to the raw string.
+SOUND_OUTPUT_NAMES = {
+    "tv_speaker": "TV Speaker",
+    "external_speaker": "External Speaker (optical/wired)",
+    "external_optical": "Optical",
+    "external_arc": "HDMI ARC / eARC",
+    "lineout": "Line Out",
+    "headphone": "Headphones",
+    "tv_speaker_headphone": "TV Speaker + Headphones",
+    "tv_external_speaker": "TV Speaker + Optical",
+    "bt_soundbar": "Bluetooth Soundbar",
+    "bt_headset": "Bluetooth Headset",
+    "soundbar": "Soundbar",
+}

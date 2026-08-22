@@ -78,24 +78,55 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
 
 ---
 
-## Entities (phase 1)
+## Entities
 
 - **`media_player`** — power off (`power_off`), power on (Wake‑on‑LAN),
   volume / mute, current app, and source select.
 - **`select` · Game Optimizer genre** — Standard, FPS, RTS, RPG, Sports via
   `set_settings("other", {"gameGenre": …})`.
+- **`sensor` · Audio output** — shows the current sound output (HDMI ARC/eARC,
+  Bluetooth, TV speakers, optical, …). webOS reports `external_arc` for both ARC
+  and eARC; the raw value is available as the `raw_sound_output` attribute.
+
+### Power‑on (Wake‑on‑LAN)
+
+Power‑*off* works out of the box. Power‑*on* needs two things:
+
+1. A **MAC address** set in the integration **options** (Settings → Devices &
+   services → LG webOS → Configure). The `media_player` only advertises TURN_ON
+   once a MAC is present.
+2. The TV's **“Mobile TV On”** / Wake‑on‑LAN setting enabled
+   (General → Devices → External Devices, or Network settings, depending on
+   model). Without it the TV ignores the magic packet.
+
+### HDMI input switching
+
+HDMI 1–4 do **not** appear in the source list until you enable
+**“Enable HDMI input switching”** in the options (off by default — see the
+soundbar‑drift caution below). Once enabled, the inputs from the TV appear
+alongside launchable apps.
+
+### Power state
+
+The TV is reported **off** in standby too (webOS “Active Standby”/“Suspend”),
+not just when fully unreachable — so a shut‑down TV shows `off` even while it
+stays on the network for Quick Start. “Screen Off” counts as on (audio may still
+be playing over eARC).
 
 ### Confirmed vs unconfirmed (labeled as `lg_webos_net.py` labels its verbs)
 
 | Capability | Status on this TV/firmware |
 |---|---|
 | Fresh‑key full permissions (sec.3a hypothesis A) | **CONFIRMED** (2026‑08‑22, fresh pair) |
+| Loads in HA as a device (media_player + select + sensor) | **CONFIRMED** (clean logs) |
 | `launch_app` (app / screensaver) | **CONFIRMED** (fresh key) |
-| Game Optimizer genre FPS ↔ Standard (alert bridge) | **CONFIRMED** (seen on screen, fresh key) |
-| Reads (current app, volume) | **CONFIRMED** |
-| `power_off` | **LIKELY** — standard SSAP, untested here |
-| Volume set / mute write | **LIKELY** — audio scope present, write untested |
-| HDMI input switching (`set_input`) | **UNCONFIRMED** — off by default (see below) |
+| Game Optimizer genre FPS ↔ Standard (alert bridge) | **CONFIRMED** (seen on screen + in HA) |
+| Volume set / mute write | **CONFIRMED** (verified in HA) |
+| `power_off` | **CONFIRMED** (verified in HA) |
+| Reads (current app, volume, sound output) | **CONFIRMED** |
+| Power state incl. standby → off | **CONFIRMED** (fixed after live report) |
+| Power‑on (Wake‑on‑LAN) | **UNCONFIRMED** — needs MAC in options + “Mobile TV On” |
+| HDMI input switching (`set_input`) | **UNCONFIRMED** — off by default (opt‑in) |
 | Game genre **read‑back** | **NOT AVAILABLE** — `getSystemSettings` 500s; the select shows the last value set this session |
 
 ---

@@ -7,17 +7,17 @@ Centralizes client creation/connection (handover sec.4/sec.5):
   * an in-memory key store so bscpylgtv never writes its sqlite file into the
     HA config dir, and never persists a *different* key over the configured one
     (sec.3),
-  * a bounded connect-retry loop mirroring lg_webos_net.py.
+  * a single fast connect attempt on the poll path so an off/unreachable TV is
+    reported off within ~2s instead of blocking the poll.
 
-Polls a minimal set (current app, volume, mute, power) rather than subscribing,
-because on this firmware some subscriptions are silently dropped.
+Polls a minimal set (current app, volume, mute, power, sound output) rather than
+subscribing, because on this firmware some subscriptions are silently dropped.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -27,12 +27,16 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from bscpylgtv import WebOsClient
 
 from .const import (
-    CONNECT_RETRY_INTERVAL,
-    CONNECT_WAIT_SECONDS,
     GAME_GENRE_CATEGORY,
     GAME_GENRE_KEY,
 )
 from .patch import apply_manifest
+
+# Fast connect tuning for routine polling: a shut-down/unreachable TV should be
+# detected in a couple of seconds, not block the poll. (~timeout_connect *
+# connect_retry_attempts worst case.) The config flow keeps the library defaults.
+_POLL_TIMEOUT_CONNECT = 2
+_POLL_CONNECT_ATTEMPTS = 1
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +65,13 @@ class _MemoryKeyStore:
 
 
 async def async_make_client(
-    hass: HomeAssistant, host: str, client_key: str | None, storage: _MemoryKeyStore
+    hass: HomeAssistant,
+    host: str,
+    client_key: str | None,
+    storage: _MemoryKeyStore,
+    *,
+    timeout_connect: int | None = None,
+    connect_retry_attempts: int | None = None,
 ) -> WebOsClient:
     """Build a bscpylgtv client with the canonical manifest, but NOT connected.
 
@@ -70,7 +80,16 @@ async def async_make_client(
     I/O; HA forbids that in the event loop. So construct the object in an
     executor, then run the async storage init and apply the manifest in the loop.
     Mirrors WebOsClient.create() (which is __init__ + async_init) but off-loop.
+
+    timeout_connect / connect_retry_attempts override the library defaults; the
+    coordinator passes tight values for snappy offline detection while the config
+    flow leaves them at the (known-good) defaults.
     """
+    extra: dict[str, Any] = {}
+    if timeout_connect is not None:
+        extra["timeout_connect"] = timeout_connect
+    if connect_retry_attempts is not None:
+        extra["connect_retry_attempts"] = connect_retry_attempts
 
     def _construct() -> WebOsClient:
         return WebOsClient(
@@ -79,6 +98,7 @@ async def async_make_client(
             key_file_path=None,         # do not touch the sqlite key store
             storage=storage,
             states=[],                  # sec.5: avoid the subscription/static-state cascade
+            **extra,
         )
 
     client = await hass.async_add_executor_job(_construct)
@@ -125,40 +145,31 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.host,
             self.client_key,
             _MemoryKeyStore(self.host, self.client_key),
-        )
-
-    async def _connect_with_retry(self) -> WebOsClient:
-        """Bounded connect loop that tolerates a cold/booting TV (sec.4)."""
-        deadline = time.monotonic() + CONNECT_WAIT_SECONDS
-        last_exc: Exception | None = None
-        while time.monotonic() < deadline:
-            client = await self._build_client()
-            try:
-                await client.connect()
-            except Exception as exc:  # noqa: BLE001 -- tolerate a booting TV, keep retrying
-                last_exc = exc
-                await self._safe_disconnect(client)
-                await asyncio.sleep(CONNECT_RETRY_INTERVAL)
-                continue
-            # A freshly-paired key surfaces on the client; capture it so callers
-            # can persist it to the config entry.
-            if client.client_key and client.client_key != self.client_key:
-                self.client_key = client.client_key
-            return client
-        raise ConnectionError(
-            f"could not connect to {self.host} within {CONNECT_WAIT_SECONDS:.0f}s: {last_exc}"
+            timeout_connect=_POLL_TIMEOUT_CONNECT,
+            connect_retry_attempts=_POLL_CONNECT_ATTEMPTS,
         )
 
     async def async_ensure_connected(self) -> WebOsClient:
-        """Return a live client, (re)connecting under a lock if needed."""
+        """Return a live client, (re)connecting under a lock if needed.
+
+        A single fast attempt: if the TV is off/unreachable this raises within a
+        couple of seconds and the poll reports the TV as off, rather than blocking.
+        The next poll (every update_interval) reconnects once the TV is back.
+        """
         async with self._connect_lock:
             if self._client is not None and self._client.is_connected():
                 return self._client
             if self._client is not None:
                 await self._safe_disconnect(self._client)
                 self._client = None
-            self._client = await self._connect_with_retry()
-            return self._client
+            client = await self._build_client()
+            await client.connect()
+            # A freshly-paired key surfaces on the client; capture it so callers
+            # can persist it to the config entry.
+            if client.client_key and client.client_key != self.client_key:
+                self.client_key = client.client_key
+            self._client = client
+            return client
 
     @staticmethod
     async def _safe_disconnect(client: WebOsClient) -> None:
@@ -194,6 +205,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         power = await self._safe_call(client.get_power_state)
         data["power"] = self._interpret_power(power)
+        data["sound_output"] = await self._safe_call(client.get_sound_output)
 
         # Apps/inputs change rarely and each read can cost a full silent-drop
         # timeout, so fetch them only once (when the cache is empty) and reuse
@@ -219,6 +231,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "current_app_id": None,
             "volume": None,
             "muted": None,
+            "sound_output": None,
             "apps": prev.get("apps") or [],
             "inputs": prev.get("inputs") or [],
             "game_genre": self.last_game_genre,
@@ -234,18 +247,27 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _interpret_power(power: Any) -> str:
+        """Map a webOS power state to on/off.
+
+        Order matters: 'Active Standby' contains 'active' but is a low-power
+        standby (what a Quick-Start TV reports shortly after power-off while it
+        stays network-reachable), so standby/suspend/off are checked first.
+        'Screen Off' means the panel is off but the system is on (audio may still
+        play via eARC), so it counts as on.
+        """
         if not isinstance(power, dict):
             return "on"  # connected but no power info -> assume on
-        payload = power.get("payload") if "payload" in power else power
-        state = str((payload or {}).get("state", "")).lower()
+        state = str(power.get("state", "")).strip().lower()
         if not state:
             return "on"
-        if "active" in state or "screen off" in state:
-            # 'Active' and 'Active Standby'/'Screen Off' still mean powered.
-            return "on"
-        if "suspend" in state or "power off" in state or "off" in state:
+        if "standby" in state or "suspend" in state or "power off" in state or state == "off":
             return "off"
-        return "on"
+        if "screen off" in state:
+            return "on"
+        if "active" in state:
+            return "on"
+        # 'Unknown' or unexpected -> off, so a shut-down TV never reads as on.
+        return "off"
 
     # --------------------------------------------------------------- commands
 

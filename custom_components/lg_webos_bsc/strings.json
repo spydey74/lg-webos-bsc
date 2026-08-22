@@ -57,6 +57,11 @@
       "game_genre": {
         "name": "Game Optimizer genre"
       }
+    },
+    "sensor": {
+      "sound_output": {
+        "name": "Audio output"
+      }
     }
   }
 }
