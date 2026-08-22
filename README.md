@@ -164,8 +164,8 @@ be playing over eARC).
 | Picture settings read incl. sharpness/oled_light | **NOT AVAILABLE** — 500s the whole batch |
 | `get_system_info` (model/serial) | **CONFIRMED** |
 | `get_software_info` (sw version) | **NOT AVAILABLE** — 401 |
-| Remote key presses (`button()`) | **UNCONFIRMED** — needs input socket; may 401 (disabled by default) |
-| SSDP discovery | **UNCONFIRMED** — implemented, not yet verified live |
+| Remote key presses (`button()`) | **CONFIRMED** (HOME verified live; input socket works with the fresh key) |
+| SSDP discovery | **CONFIRMED** (dedupes against the already-configured TV) |
 | Game genre **read‑back** | **NOT AVAILABLE** — `getSystemSettings` 500s; the select shows the last value set this session |
 
 ---
