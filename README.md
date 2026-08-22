@@ -107,6 +107,7 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
   (`remote.send_command` with names like HOME/BACK/UP/DOWN/ENTER/…). Uses the
   input/pointer socket, which can 401 on this firmware — a failed key raises a
   clear error but never brings the entity or entry down. Enable it to try.
+- **`notify`** — shows an on-screen toast on the TV (`bscpylgtv.send_message`).
 
 ### Services
 
@@ -166,6 +167,8 @@ be playing over eARC).
 | `get_software_info` (sw version) | **NOT AVAILABLE** — 401 |
 | Remote key presses (`button()`) | **CONFIRMED** (HOME verified live; input socket works with the fresh key) |
 | SSDP discovery | **CONFIRMED** (dedupes against the already-configured TV) |
+| Push state updates (subscriptions) | **CONFIRMED** — volume/app/input push in <1 s; no connect hang |
+| Notify (on-screen toast) | **LIKELY** — `send_message`, not yet verified live |
 | Game genre **read‑back** | **NOT AVAILABLE** — `getSystemSettings` 500s; the select shows the last value set this session |
 
 ---
@@ -193,17 +196,24 @@ be playing over eARC).
 
 ---
 
-## How the connection is made robust (sec.5)
+## State updates: hybrid push + poll (sec.5)
 
-- The client is created with **`states=[]`** and the coordinator **polls**
-  (`get_current_app`, `get_volume`, `get_muted`, `get_power_state`). This avoids
-  the subscription/static‑state cascade — `bscpylgtv`'s `connect_handler` fetches
-  `software_info` unguarded, which can fail on this firmware and abort setup.
-- The canonical manifest is re‑applied on **every** (re)connect.
-- Input‑socket use is lazy in `bscpylgtv` (only on button/cursor), so it cannot
-  abort connect; a merely‑off/unreachable TV is reported as **off**, not
-  unavailable.
-- Cold‑boot connects use a bounded retry loop (~90 s), mirroring `lg_webos_net.py`.
+Like Home Assistant's core `webostv`, this integration is **push-first**:
+
+- It subscribes to a curated scalar set (`power`, `current_app`, `muted`,
+  `volume`, `sound_output`) via `register_state_update_callback`, so changes made
+  with the physical remote (volume, HDMI switches, power) reflect in HA within a
+  fraction of a second — verified on webOS 26 (`tools/subscription_probe.py`).
+- The periodic poll becomes a **reconnect heartbeat** that also refreshes the
+  bits we don't subscribe (apps/inputs list, `system_info`, picture settings).
+- `bscpylgtv` awaits subscription setup with **no timeout**, so a silently-dropped
+  subscription could hang `connect()`. We bound it (20 s) and **automatically fall
+  back to pure polling** for the session if that happens — zero regression.
+- We deliberately do **not** subscribe `system_info`/`software_info` (static;
+  `software_info` 401s) or `apps`/`inputs` (their subscribed shape differs).
+- The canonical manifest is re-applied on **every** (re)connect; the input socket
+  is lazy so it can't abort connect; a merely-off/unreachable TV is reported
+  **off**, not unavailable, and detected within ~2 s.
 
 ---
 
@@ -224,10 +234,32 @@ custom_components/lg_webos_bsc/
   number.py          picture: backlight/contrast/brightness/color
   button.py          screen on/off, screensaver, reboot
   remote.py          webOS key presses (input socket; may 401)
+  notify.py          on-screen toast messages
+  diagnostics.py     redacted config-entry + runtime dump
   services.yaml      launch_app / set_settings / command / luna
   strings.json  translations/en.json
 tools/
   webos26_decision_gate_probe.py   the sec.3a test — run first
-  get_picture_settings_probe.py    phase‑2 read gate (picture/sw-info reads)
+  get_picture_settings_probe.py    phase-2 read gate (picture/sw-info reads)
+  subscription_probe.py            push-updates gate (do subscriptions fire?)
 hacs.json  README.md
 ```
+
+## Credits & acknowledgements
+
+This integration stands on work generously shared by others — thank you:
+
+- **[chros73/bscpylgtv](https://github.com/chros73/bscpylgtv)** — the engine this
+  integration drives (game optimizer, picture, `set_settings` alert bridge, subscriptions).
+- **[home-assistant-libs/aiowebostv](https://github.com/home-assistant-libs/aiowebostv)**
+  — the canonical webOS 26 pairing manifest (PR #719) we present at runtime, and
+  the push/`register_state_update_callback` model this integration mirrors.
+- **[Home Assistant core `webostv`](https://github.com/home-assistant/core/tree/dev/homeassistant/components/webostv)**
+  — the hybrid push + reconnect-poll architecture we followed.
+- **[belikh/ha_chros73_bscpylgtv](https://github.com/belikh/ha_chros73_bscpylgtv)**
+  — a helpful reference for the HA wiring shape and the bscpylgtv entity surface
+  (number/select/button/remote/notify/services).
+- **LGTVCompanion** and **BetterDisplay** — independently found and shipped the
+  unsigned-manifest fix for the webOS 26 blacklist that made any of this possible.
+
+Any mistakes here are ours, not theirs.

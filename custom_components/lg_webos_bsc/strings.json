@@ -86,6 +86,9 @@
     },
     "remote": {
       "remote": { "name": "Remote" }
+    },
+    "notify": {
+      "toast": { "name": "Toast message" }
     }
   },
   "services": {

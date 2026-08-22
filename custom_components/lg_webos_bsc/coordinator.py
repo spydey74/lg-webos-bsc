@@ -42,6 +42,18 @@ from .patch import apply_manifest
 _POLL_TIMEOUT_CONNECT = 2
 _POLL_CONNECT_ATTEMPTS = 1
 
+# Push (hybrid) mode: subscribe to the fast-changing scalars so the UI updates
+# instantly (confirmed to fire on webOS 26 via tools/subscription_probe.py).
+# Deliberately EXCLUDES apps/inputs (their subscribed property is a differently
+# shaped dict -- we keep reading those via the list getters) and
+# system_info/software_info (static; software_info 401s). power/current_app/
+# muted/volume/sound_output update client.power_state/current_appId/muted/volume/
+# sound_output.
+_SUBSCRIBE_STATES = ["power", "current_app", "muted", "volume", "sound_output"]
+# bscpylgtv awaits subscription setup with no timeout; if a subscription silently
+# drops, connect() can hang. Bound it, and fall back to pure polling on timeout.
+_PUSH_CONNECT_TIMEOUT = 20.0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -74,6 +86,7 @@ async def async_make_client(
     client_key: str | None,
     storage: _MemoryKeyStore,
     *,
+    states: list[str] | None = None,
     timeout_connect: int | None = None,
     connect_retry_attempts: int | None = None,
 ) -> WebOsClient:
@@ -101,7 +114,7 @@ async def async_make_client(
             client_key=client_key,     # None -> fresh pair; else reuse configured key
             key_file_path=None,         # do not touch the sqlite key store
             storage=storage,
-            states=[],                  # sec.5: avoid the subscription/static-state cascade
+            states=states or [],        # [] = poll only; a subset = push subscriptions
             **extra,
         )
 
@@ -136,6 +149,9 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.mac = mac
         self._client: WebOsClient | None = None
         self._connect_lock = asyncio.Lock()
+        # Start in push (hybrid) mode; downgrade to pure polling if a subscription
+        # ever hangs connect().
+        self._push_mode = True
         # We cannot reliably read some settings back (getSystemSettings 500s on
         # this firmware), so track the last value we set for optimistic state.
         self.last_game_genre: str | None = None
@@ -144,22 +160,31 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------ client
 
     async def _build_client(self) -> WebOsClient:
-        """Create a bscpylgtv client with the manifest patched, but not connected."""
-        return await async_make_client(
+        """Create a bscpylgtv client with the manifest patched, but not connected.
+
+        In push mode, subscribe to the scalar state subset and register the push
+        callback so the UI updates instantly.
+        """
+        client = await async_make_client(
             self.hass,
             self.host,
             self.client_key,
             _MemoryKeyStore(self.host, self.client_key),
+            states=_SUBSCRIBE_STATES if self._push_mode else [],
             timeout_connect=_POLL_TIMEOUT_CONNECT,
             connect_retry_attempts=_POLL_CONNECT_ATTEMPTS,
         )
+        if self._push_mode:
+            await client.register_state_update_callback(self._on_push)
+        return client
 
     async def async_ensure_connected(self) -> WebOsClient:
         """Return a live client, (re)connecting under a lock if needed.
 
         A single fast attempt: if the TV is off/unreachable this raises within a
         couple of seconds and the poll reports the TV as off, rather than blocking.
-        The next poll (every update_interval) reconnects once the TV is back.
+        In push mode connect() is bounded by a timeout; if a subscription hangs we
+        permanently downgrade to pure polling and reconnect.
         """
         async with self._connect_lock:
             if self._client is not None and self._client.is_connected():
@@ -167,14 +192,54 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._client is not None:
                 await self._safe_disconnect(self._client)
                 self._client = None
+
             client = await self._build_client()
-            await client.connect()
+            try:
+                if self._push_mode:
+                    await asyncio.wait_for(client.connect(), timeout=_PUSH_CONNECT_TIMEOUT)
+                else:
+                    await client.connect()
+            except asyncio.TimeoutError:
+                await self._safe_disconnect(client)
+                if self._push_mode:
+                    _LOGGER.warning(
+                        "Push subscriptions hung connect() on %s; downgrading to "
+                        "polling for this session",
+                        self.host,
+                    )
+                    self._push_mode = False
+                    client = await self._build_client()
+                    await client.connect()
+                else:
+                    raise
+
             # A freshly-paired key surfaces on the client; capture it so callers
             # can persist it to the config entry.
             if client.client_key and client.client_key != self.client_key:
                 self.client_key = client.client_key
             self._client = client
             return client
+
+    async def _on_push(self, client: WebOsClient) -> None:
+        """bscpylgtv push callback: reflect the new scalar state immediately."""
+        prev = self.data or {}
+        self.async_set_updated_data(
+            {
+                "connected": True,
+                "power": self._interpret_power(getattr(client, "power_state", None)),
+                "current_app_id": getattr(client, "current_appId", None),
+                "volume": getattr(client, "volume", None),
+                "muted": getattr(client, "muted", None),
+                "sound_output": getattr(client, "sound_output", None),
+                # Slow-changing bits keep their last polled snapshot.
+                "apps": prev.get("apps") or [],
+                "inputs": prev.get("inputs") or [],
+                "system_info": prev.get("system_info") or {},
+                "picture_settings": prev.get("picture_settings") or {},
+                "game_genre": self.last_game_genre,
+                "picture_mode": self.last_picture_mode,
+            }
+        )
 
     @staticmethod
     async def _safe_disconnect(client: WebOsClient) -> None:
@@ -204,13 +269,22 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         data: dict[str, Any] = {"connected": True, "power": "on"}
 
-        data["current_app_id"] = await self._safe_call(client.get_current_app)
-        data["volume"] = await self._safe_call(client.get_volume)
-        data["muted"] = await self._safe_call(client.get_muted)
+        if self._push_mode:
+            # Scalars come from the subscription-updated properties (no network);
+            # power is re-read explicitly so standby detection stays reliable even
+            # if the power subscription is quiet.
+            data["current_app_id"] = getattr(client, "current_appId", None)
+            data["volume"] = getattr(client, "volume", None)
+            data["muted"] = getattr(client, "muted", None)
+            data["sound_output"] = getattr(client, "sound_output", None)
+        else:
+            data["current_app_id"] = await self._safe_call(client.get_current_app)
+            data["volume"] = await self._safe_call(client.get_volume)
+            data["muted"] = await self._safe_call(client.get_muted)
+            data["sound_output"] = await self._safe_call(client.get_sound_output)
 
         power = await self._safe_call(client.get_power_state)
         data["power"] = self._interpret_power(power)
-        data["sound_output"] = await self._safe_call(client.get_sound_output)
 
         # Apps/inputs change rarely and each read can cost a full silent-drop
         # timeout, so fetch them only once (when the cache is empty) and reuse
@@ -363,6 +437,11 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Send a remote key via the input/pointer socket (may 401 on this firmware)."""
         client = await self.async_ensure_connected()
         await client.button(name)
+
+    async def async_send_message(self, message: str) -> None:
+        """Show an on-screen toast (bscpylgtv.send_message)."""
+        client = await self.async_ensure_connected()
+        await client.send_message(message)
 
     async def async_wake(self) -> None:
         """Power on via Wake-on-LAN.

@@ -28,6 +28,7 @@ PLATFORMS: list[Platform] = [
     Platform.BUTTON,
     Platform.NUMBER,
     Platform.REMOTE,
+    Platform.NOTIFY,
 ]
 
 type LgWebosBscConfigEntry = ConfigEntry[LgWebosBscCoordinator]
