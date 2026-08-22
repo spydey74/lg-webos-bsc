@@ -37,7 +37,8 @@
       "unknown": "Unexpected error. Check the Home Assistant logs."
     },
     "abort": {
-      "already_configured": "This TV is already configured."
+      "already_configured": "This TV is already configured.",
+      "cannot_connect": "Could not determine the TV address from discovery."
     }
   },
   "options": {
@@ -47,7 +48,8 @@
         "data": {
           "poll_interval": "Polling interval (seconds)",
           "enable_input_switching": "Enable HDMI input switching (off by default — can disturb the soundbar audio path)",
-          "mac": "MAC address (for Wake-on-LAN)"
+          "mac": "MAC address (for Wake-on-LAN)",
+          "wol_broadcast": "Wake-on-LAN broadcast address (optional, e.g. 192.168.1.255)"
         }
       }
     }
@@ -81,6 +83,9 @@
       "screensaver": { "name": "Screensaver" },
       "reboot": { "name": "Reboot" },
       "reboot_soft": { "name": "Reboot (soft)" }
+    },
+    "remote": {
+      "remote": { "name": "Remote" }
     }
   },
   "services": {

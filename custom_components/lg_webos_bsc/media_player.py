@@ -174,35 +174,13 @@ class LgWebosBscMediaPlayer(LgWebosBscEntity, MediaPlayerEntity):
     # --------------------------------------------------------------- commands
 
     async def async_turn_on(self) -> None:
-        """Power on via Wake-on-LAN (TV needs 'Mobile TV On' enabled).
-
-        Sends to the TV's *directed subnet broadcast* (e.g. 192.168.1.255) as
-        well as the global broadcast. HA often runs where a 255.255.255.255
-        packet never reaches the TV's subnet, while a directed broadcast does --
-        which is why a phone app on the same Wi-Fi works but the default did not.
-        """
-        mac = self._wol_mac
-        if not mac:
+        """Power on via Wake-on-LAN (TV needs 'Mobile TV On' enabled)."""
+        if not self._wol_mac:
             raise ServiceValidationError(
                 "No MAC address configured; set one in the integration options to "
                 "enable Wake-on-LAN power-on."
             )
-        from wakeonlan import send_magic_packet
-
-        host = self.coordinator.host
-        targets: list[str] = []
-        parts = host.split(".")
-        if len(parts) == 4 and all(p.isdigit() for p in parts):
-            targets.append(".".join(parts[:3] + ["255"]))  # directed subnet broadcast
-        targets.append("255.255.255.255")                   # global broadcast fallback
-
-        def _send() -> None:
-            for target in targets:
-                # Port 9 is the webOS/standard WOL port; also hit 7 for good measure.
-                send_magic_packet(mac, ip_address=target, port=9)
-                send_magic_packet(mac, ip_address=target, port=7)
-
-        await self.hass.async_add_executor_job(_send)
+        await self.coordinator.async_wake()
 
     async def async_turn_off(self) -> None:
         await self.coordinator.async_power_off()

@@ -16,6 +16,7 @@ CONF_PAIR_MODE = "pair_mode"
 # Options
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_ENABLE_INPUT_SWITCHING = "enable_input_switching"
+CONF_WOL_BROADCAST = "wol_broadcast"
 
 # Pairing modes offered by the config flow (see handover sec.3a)
 PAIR_MODE_EXISTING = "existing_key"   # paste a known-good (grandfathered) key

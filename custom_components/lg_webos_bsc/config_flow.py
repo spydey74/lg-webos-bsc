@@ -18,6 +18,7 @@ import asyncio
 import logging
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import voluptuous as vol
 
@@ -29,6 +30,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.service_info.ssdp import SsdpServiceInfo
 
 from .const import (
     CONF_CLIENT_KEY,
@@ -37,6 +39,7 @@ from .const import (
     CONF_MAC,
     CONF_NAME,
     CONF_POLL_INTERVAL,
+    CONF_WOL_BROADCAST,
     DEFAULT_ENABLE_INPUT_SWITCHING,
     DEFAULT_NAME,
     DEFAULT_POLL_INTERVAL,
@@ -143,6 +146,32 @@ class LgWebosBscConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    _discovered_host: str | None = None
+    _discovered_name: str | None = None
+
+    async def async_step_ssdp(
+        self, discovery_info: SsdpServiceInfo
+    ) -> ConfigFlowResult:
+        """Handle a webOS TV discovered via SSDP."""
+        host = urlparse(discovery_info.ssdp_location or "").hostname
+        if not host:
+            return self.async_abort(reason="cannot_connect")
+        uid = discovery_info.ssdp_udn or discovery_info.upnp.get("UDN")
+        await self.async_set_unique_id(uid or host)
+        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+        self._discovered_host = host
+        self._discovered_name = discovery_info.upnp.get("friendlyName")
+        self.context["title_placeholders"] = {"name": self._discovered_name or host}
+        return await self.async_step_user()
+
+    def _initial_defaults(self) -> dict[str, Any]:
+        defaults: dict[str, Any] = {}
+        if self._discovered_host:
+            defaults[CONF_HOST] = self._discovered_host
+        if self._discovered_name:
+            defaults[CONF_NAME] = self._discovered_name
+        return defaults
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -183,7 +212,7 @@ class LgWebosBscConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         return self.async_show_form(
             step_id="existing_key",
-            data_schema=_base_schema({}, with_key=True),
+            data_schema=_base_schema(self._initial_defaults(), with_key=True),
             errors=errors,
         )
 
@@ -218,13 +247,15 @@ class LgWebosBscConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         return self.async_show_form(
             step_id="fresh",
-            data_schema=_base_schema({}, with_key=False),
+            data_schema=_base_schema(self._initial_defaults(), with_key=False),
             errors=errors,
         )
 
     async def async_set_unique_id_for(self, host: str, mac: str | None) -> None:
-        uid = (mac or "").strip().lower() or host
-        await self.async_set_unique_id(uid)
+        # Keep an SSDP-provided unique id (UDN); only derive one for manual flows.
+        if self.unique_id is None:
+            uid = (mac or "").strip().lower() or host
+            await self.async_set_unique_id(uid)
         self._abort_if_unique_id_configured(updates={CONF_HOST: host})
 
     @callback
@@ -271,6 +302,10 @@ class LgWebosBscOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_MAC,
                     default=opts.get(CONF_MAC, data.get(CONF_MAC, "")),
+                ): cv.string,
+                vol.Optional(
+                    CONF_WOL_BROADCAST,
+                    default=opts.get(CONF_WOL_BROADCAST, ""),
                 ): cv.string,
             }
         )

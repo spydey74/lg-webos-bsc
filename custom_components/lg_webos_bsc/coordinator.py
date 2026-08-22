@@ -26,7 +26,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from bscpylgtv import WebOsClient
 
+from homeassistant.exceptions import HomeAssistantError
+
 from .const import (
+    CONF_WOL_BROADCAST,
     GAME_GENRE_CATEGORY,
     GAME_GENRE_KEY,
     PICTURE_CATEGORY,
@@ -355,6 +358,42 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_button(self, method_name: str) -> None:
         """Call a no-arg client method by name (used by button entities)."""
         await self.async_command(lambda c: getattr(c, method_name)())
+
+    async def async_remote_button(self, name: str) -> None:
+        """Send a remote key via the input/pointer socket (may 401 on this firmware)."""
+        client = await self.async_ensure_connected()
+        await client.button(name)
+
+    async def async_wake(self) -> None:
+        """Power on via Wake-on-LAN.
+
+        Sends to (in order) an optional user-configured broadcast address, the
+        TV's directed subnet broadcast, and the global broadcast -- ports 9 and 7.
+        Note: whether this reaches the TV depends on HA's network egress; on some
+        setups HA cannot emit a LAN broadcast at all.
+        """
+        mac = self.mac
+        if not mac:
+            raise HomeAssistantError(
+                "No MAC address configured; set one in the integration options."
+            )
+        from wakeonlan import send_magic_packet
+
+        targets: list[str] = []
+        override = (self.entry.options.get(CONF_WOL_BROADCAST) or "").strip()
+        if override:
+            targets.append(override)
+        parts = self.host.split(".")
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            targets.append(".".join(parts[:3] + ["255"]))  # directed subnet broadcast
+        targets.append("255.255.255.255")                   # global broadcast fallback
+
+        def _send() -> None:
+            for target in dict.fromkeys(targets):  # de-dup, keep order
+                send_magic_packet(mac, ip_address=target, port=9)
+                send_magic_packet(mac, ip_address=target, port=7)
+
+        await self.hass.async_add_executor_job(_send)
 
     async def async_set_game_genre(self, genre: str) -> None:
         """Set Game Optimizer genre via bscpylgtv.set_settings (alert bridge).

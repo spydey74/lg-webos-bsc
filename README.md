@@ -69,12 +69,16 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
 
 1. HACS → ⋮ → **Custom repositories** → add this repo, category **Integration**.
 2. Install **LG webOS (bscpylgtv)**, restart Home Assistant.
-3. **Settings → Devices & services → Add integration → LG webOS (bscpylgtv)**.
+3. **Settings → Devices & services → Add integration → LG webOS (bscpylgtv)**
+   — or accept the **SSDP‑discovered** TV card if it appears (it pre‑fills the
+   host and dedupes by the TV's UPnP id).
 4. Pick the mode per your decision‑gate result, enter the TV IP (and MAC for
    Wake‑on‑LAN power‑on), and finish.
 
 **Power‑on:** Wake‑on‑LAN requires a MAC address and the TV's
-**“Mobile TV On”** setting enabled.
+**“Mobile TV On”** setting enabled. If HA can't broadcast onto the TV's subnet
+(some container setups can't), set an explicit **WOL broadcast address**
+(e.g. `192.168.1.255`) in the integration options.
 
 ---
 
@@ -99,6 +103,10 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
 - **`sensor` · Model** (diagnostic, disabled by default) — model name + serial
   from `get_system_info` (`get_software_info` 401s on this firmware, so version
   sensors aren't available).
+- **`remote`** (disabled by default) — sends webOS key presses
+  (`remote.send_command` with names like HOME/BACK/UP/DOWN/ENTER/…). Uses the
+  input/pointer socket, which can 401 on this firmware — a failed key raises a
+  clear error but never brings the entity or entry down. Enable it to try.
 
 ### Services
 
@@ -156,6 +164,8 @@ be playing over eARC).
 | Picture settings read incl. sharpness/oled_light | **NOT AVAILABLE** — 500s the whole batch |
 | `get_system_info` (model/serial) | **CONFIRMED** |
 | `get_software_info` (sw version) | **NOT AVAILABLE** — 401 |
+| Remote key presses (`button()`) | **UNCONFIRMED** — needs input socket; may 401 (disabled by default) |
+| SSDP discovery | **UNCONFIRMED** — implemented, not yet verified live |
 | Game genre **read‑back** | **NOT AVAILABLE** — `getSystemSettings` 500s; the select shows the last value set this session |
 
 ---
@@ -213,6 +223,7 @@ custom_components/lg_webos_bsc/
   sensor.py          audio output, model
   number.py          picture: backlight/contrast/brightness/color
   button.py          screen on/off, screensaver, reboot
+  remote.py          webOS key presses (input socket; may 401)
   services.yaml      launch_app / set_settings / command / luna
   strings.json  translations/en.json
 tools/
