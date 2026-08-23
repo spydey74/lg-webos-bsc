@@ -33,6 +33,8 @@ from .const import (
     GAME_GENRE_CATEGORY,
     GAME_GENRE_KEY,
     PICTURE_CATEGORY,
+    SOUND_CATEGORY,
+    SOUND_SETTINGS_KEYS,
 )
 from .patch import apply_manifest
 
@@ -156,6 +158,8 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # this firmware), so track the last value we set for optimistic state.
         self.last_game_genre: str | None = None
         self.last_picture_mode: str | None = None
+        # Resolved readable subset of the sound category (None = not yet probed).
+        self._sound_keys: list[str] | None = None
 
     # ------------------------------------------------------------------ client
 
@@ -236,6 +240,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "inputs": prev.get("inputs") or [],
                 "system_info": prev.get("system_info") or {},
                 "picture_settings": prev.get("picture_settings") or {},
+                "sound_settings": prev.get("sound_settings") or {},
                 "game_genre": self.last_game_genre,
                 "picture_mode": self.last_picture_mode,
             }
@@ -311,9 +316,50 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         pic = await self._safe_call(client.get_picture_settings)
         data["picture_settings"] = pic if pic is not None else (prev.get("picture_settings") or {})
 
+        sound = await self._read_sound_settings(client)
+        data["sound_settings"] = sound if sound else (prev.get("sound_settings") or {})
+
         data["game_genre"] = self.last_game_genre
         data["picture_mode"] = self.last_picture_mode
         return data
+
+    async def _read_sound_settings(self, client: WebOsClient) -> dict[str, Any]:
+        """Read the readable subset of the sound category.
+
+        A single unsupported key 500s a batch read (as with picture
+        sharpness/oled_light), so on first use we resolve the readable subset --
+        try the full batch, and on failure fall back to per-key discovery -- then
+        batch just that subset on every subsequent poll.
+        """
+        if self._sound_keys is None:
+            try:
+                res = await client.get_system_settings(SOUND_CATEGORY, list(SOUND_SETTINGS_KEYS))
+                self._sound_keys = list(SOUND_SETTINGS_KEYS)
+                return (res or {}).get("settings") or {}
+            except Exception:  # noqa: BLE001 -- discover the good subset one by one
+                good: dict[str, Any] = {}
+                for key in SOUND_SETTINGS_KEYS:
+                    try:
+                        res = await client.get_system_settings(SOUND_CATEGORY, [key])
+                        settings = (res or {}).get("settings") or {}
+                        if key in settings:
+                            good[key] = settings[key]
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._sound_keys = list(good.keys())
+                if good:
+                    _LOGGER.debug("Readable sound settings: %s", self._sound_keys)
+                else:
+                    _LOGGER.debug("No sound-category settings are readable on this TV")
+                return good
+
+        if not self._sound_keys:
+            return {}
+        try:
+            res = await client.get_system_settings(SOUND_CATEGORY, list(self._sound_keys))
+            return (res or {}).get("settings") or {}
+        except Exception:  # noqa: BLE001 -- transient; caller reuses the last snapshot
+            return {}
 
     def _offline_data(self) -> dict[str, Any]:
         prev = self.data or {}
@@ -328,6 +374,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "inputs": prev.get("inputs") or [],
             "system_info": prev.get("system_info") or {},
             "picture_settings": prev.get("picture_settings") or {},
+            "sound_settings": prev.get("sound_settings") or {},
             "game_genre": self.last_game_genre,
             "picture_mode": self.last_picture_mode,
         }

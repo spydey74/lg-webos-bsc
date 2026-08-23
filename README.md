@@ -108,6 +108,12 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
   input/pointer socket, which can 401 on this firmware — a failed key raises a
   clear error but never brings the entity or entry down. Enable it to try.
 - **`notify`** — shows an on-screen toast on the TV (`bscpylgtv.send_message`).
+- **`sensor` · Audio settings** — the TV's reported sound-category settings
+  (`soundOutput`, `soundOutputDigital`, `soundMode`, `soundOptimizer`, `aiSound`,
+  `aigamesound`, `bluetoothMode`, `soundModeModified`, `soundModeSync`). State is
+  the current sound output; **every readable key is an attribute**. Companion
+  per-setting sensors exist too (disabled by default) for history/automation. The
+  readable subset is discovered at runtime (some keys are firmware/model gated).
 
 ### Services
 
@@ -242,8 +248,32 @@ tools/
   webos26_decision_gate_probe.py   the sec.3a test — run first
   get_picture_settings_probe.py    phase-2 read gate (picture/sw-info reads)
   subscription_probe.py            push-updates gate (do subscriptions fire?)
+  sound_settings_probe.py          which sound-category keys read back
 hacs.json  README.md
 ```
+
+## Detecting TV-side audio overrides (companion to the soundbar integration)
+
+When automations set a 'desired' audio state on an LG soundbar (see the companion
+[spydey74/ha-lg-soundbar](https://github.com/spydey74/ha-lg-soundbar)), the TV can
+later override parts of it with its own internal logic. The **Audio settings**
+sensor surfaces the TV's *actual* sound-category state so an automation can detect
+the drift, e.g.:
+
+```yaml
+# Alert if the TV switched its digital output away from the desired passthrough
+- alias: TV overrode digital audio output
+  trigger:
+    - platform: state
+      entity_id: sensor.lg_webos_tv_audio_settings
+      attribute: soundOutputDigital
+  condition:
+    - "{{ state_attr('sensor.lg_webos_tv_audio_settings', 'soundOutputDigital') != 'auto' }}"
+  action: ...
+```
+
+Run `tools/sound_settings_probe.py` to see exactly which keys and values your TV
+reports.
 
 ## Credits & acknowledgements
 

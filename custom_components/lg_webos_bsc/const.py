@@ -81,6 +81,36 @@ PICTURE_NUMBERS = {
     "color": (0, 100),
 }
 
+# Sound-category settings read back from the TV (getSystemSettings category
+# "sound") so automations can compare the TV's actual audio state against the
+# 'desired state' pushed to the soundbar and detect TV-side overrides. Which of
+# these actually read is firmware/model dependent -- the coordinator discovers
+# the readable subset at runtime (a single unsupported key 500s a batch read).
+SOUND_CATEGORY = "sound"
+SOUND_SETTINGS_KEYS = [
+    "aiSound",
+    "aigamesound",
+    "bluetoothMode",
+    "soundMode",
+    "soundModeModified",
+    "soundModeSync",
+    "soundOptimizer",
+    "soundOutput",
+    "soundOutputDigital",
+]
+# key -> friendly entity name (for the optional per-setting sensors).
+SOUND_SETTINGS_NAMES = {
+    "aiSound": "AI Sound",
+    "aigamesound": "AI Game Sound",
+    "bluetoothMode": "Bluetooth mode",
+    "soundMode": "Sound mode",
+    "soundModeModified": "Sound mode modified",
+    "soundModeSync": "Sound mode sync",
+    "soundOptimizer": "Sound optimizer",
+    "soundOutput": "Sound output (setting)",
+    "soundOutputDigital": "Digital sound output",
+}
+
 # App ids that represent physical inputs rather than launchable apps; used to
 # split the media_player source list sensibly.
 HDMI_APP_PREFIX = "com.webos.app.hdmi"
