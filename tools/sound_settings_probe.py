@@ -46,19 +46,31 @@ except Exception:  # noqa: BLE001
 # The keys of interest (the user's list) plus a few eARC/soundbar-relevant extras
 # to see whether they also read on this model. Unsupported ones just fail here.
 CANDIDATE_KEYS = [
+    # Confirmed readable on webOS 26 (OLED G6):
+    "soundMode",
+    "soundOutput",
+    "soundOutputDigital",
+    "avSync",
+    "avSyncSpdif",
+    # eARC / digital-audio negotiation knobs the TV may override -- re-run to see
+    # which of these also read on your model:
+    "eArcSupport",
+    "hdmiArcMode",
+    "digitalAudioPriority",
+    "forceOutputDDPLUS",
+    "inputAudioFormatHDMI3",
+    "digitalSoundOutput",
+    "clearVoice",
+    "drc",
+    "equalizerStatus",
+    "autoVolume",
+    # Known to 500 on read on this firmware (kept to reconfirm on other models):
     "aiSound",
-    "aiSoundClassification",
     "aigamesound",
     "bluetoothMode",
-    "soundMode",
     "soundModeModified",
     "soundModeSync",
     "soundOptimizer",
-    "soundOutput",
-    "soundOutputDigital",
-    "autoVolume",
-    "avSync",
-    "avSyncSpdif",
     "eArc",
 ]
 

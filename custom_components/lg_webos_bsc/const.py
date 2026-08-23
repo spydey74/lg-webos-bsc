@@ -87,28 +87,24 @@ PICTURE_NUMBERS = {
 # these actually read is firmware/model dependent -- the coordinator discovers
 # the readable subset at runtime (a single unsupported key 500s a batch read).
 SOUND_CATEGORY = "sound"
+# Confirmed READABLE on webOS 26 (OLED G6) via sound_settings_probe.py -- the rest
+# of the ~100 writable sound keys 500 on read on this firmware (they may still be
+# WRITTEN with the set_settings service, just not read back). The coordinator
+# re-discovers the readable subset at runtime, so other models self-adjust.
 SOUND_SETTINGS_KEYS = [
-    "aiSound",
-    "aigamesound",
-    "bluetoothMode",
     "soundMode",
-    "soundModeModified",
-    "soundModeSync",
-    "soundOptimizer",
     "soundOutput",
     "soundOutputDigital",
+    "avSync",
+    "avSyncSpdif",
 ]
 # key -> friendly entity name (for the optional per-setting sensors).
 SOUND_SETTINGS_NAMES = {
-    "aiSound": "AI Sound",
-    "aigamesound": "AI Game Sound",
-    "bluetoothMode": "Bluetooth mode",
     "soundMode": "Sound mode",
-    "soundModeModified": "Sound mode modified",
-    "soundModeSync": "Sound mode sync",
-    "soundOptimizer": "Sound optimizer",
     "soundOutput": "Sound output (setting)",
     "soundOutputDigital": "Digital sound output",
+    "avSync": "AV sync",
+    "avSyncSpdif": "AV sync (SPDIF)",
 }
 
 # App ids that represent physical inputs rather than launchable apps; used to

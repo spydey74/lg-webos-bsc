@@ -108,12 +108,16 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
   input/pointer socket, which can 401 on this firmware — a failed key raises a
   clear error but never brings the entity or entry down. Enable it to try.
 - **`notify`** — shows an on-screen toast on the TV (`bscpylgtv.send_message`).
-- **`sensor` · Audio settings** — the TV's reported sound-category settings
-  (`soundOutput`, `soundOutputDigital`, `soundMode`, `soundOptimizer`, `aiSound`,
-  `aigamesound`, `bluetoothMode`, `soundModeModified`, `soundModeSync`). State is
-  the current sound output; **every readable key is an attribute**. Companion
-  per-setting sensors exist too (disabled by default) for history/automation. The
-  readable subset is discovered at runtime (some keys are firmware/model gated).
+- **`sensor` · Audio settings** — the TV's reported sound-category settings.
+  State is the current sound output; **every readable key is an attribute**.
+  Confirmed readable on webOS 26 (OLED G6): `soundMode`, `soundOutput`,
+  `soundOutputDigital`, `avSync`, `avSyncSpdif`. Companion per-setting sensors
+  exist too (disabled by default) for history/automation. The readable subset is
+  discovered at runtime, so other models self-adjust.
+  > Most of the ~100 sound keys **500 on read** on this firmware (`aiSound`,
+  > `bluetoothMode`, `soundOptimizer`, `eArc`, `autoVolume`, …). They can often
+  > still be **written** with the `lg_webos_bsc.set_settings` service
+  > (`category: sound`), just not read back.
 
 ### Services
 
