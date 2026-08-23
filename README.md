@@ -111,7 +111,8 @@ Game Optimizer genre flips FPS → Standard if the bridge works.
 - **`sensor` · Audio settings** — the TV's reported sound-category settings.
   State is the current sound output; **every readable key is an attribute**.
   Confirmed readable on webOS 26 (OLED G6): `soundMode`, `soundOutput`,
-  `soundOutputDigital`, `avSync`, `avSyncSpdif`. Companion per-setting sensors
+  `soundOutputDigital`, `digitalAudioPriority`, `eArcSupport`, `avSync`,
+  `avSyncSpdif`. Companion per-setting sensors
   exist too (disabled by default) for history/automation. The readable subset is
   discovered at runtime, so other models self-adjust.
   > Most of the ~100 sound keys **500 on read** on this firmware (`aiSound`,

@@ -95,6 +95,8 @@ SOUND_SETTINGS_KEYS = [
     "soundMode",
     "soundOutput",
     "soundOutputDigital",
+    "digitalAudioPriority",
+    "eArcSupport",
     "avSync",
     "avSyncSpdif",
 ]
@@ -103,6 +105,8 @@ SOUND_SETTINGS_NAMES = {
     "soundMode": "Sound mode",
     "soundOutput": "Sound output (setting)",
     "soundOutputDigital": "Digital sound output",
+    "digitalAudioPriority": "Digital audio priority",
+    "eArcSupport": "eARC support",
     "avSync": "AV sync",
     "avSyncSpdif": "AV sync (SPDIF)",
 }
