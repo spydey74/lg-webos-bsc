@@ -44,8 +44,15 @@ WRONG_CONFIRM_POLLS = 2
 #   app_title -> media_player.select_source (launch an app by its list title)
 PROFILES = {
     "nlziet": {"app_title": "NLZIET"},
-    "kodi": {"app_id": "com.webos.app.hdmi4"},
+    "youtube": {"app_title": "YouTube"},
+    "kodi": {"app_id": "com.webos.app.hdmi4"},      # VRROOM output -> TV HDMI4
     "batocera": {"app_id": "com.webos.app.hdmi3"},
+    "ps5": {"app_id": "com.webos.app.hdmi1"},       # direct HDMI1
+    "blu_ray": {"app_id": "com.webos.app.hdmi4"},   # VRROOM port 3 -> TV HDMI4
+    "xbox": {"app_id": "com.webos.app.hdmi4"},      # VRROOM port 1 -> TV HDMI4
+    "shield": {"app_id": "com.webos.app.hdmi4"},    # VRROOM port 2 -> TV HDMI4
+    "switch": {"app_id": "com.webos.app.hdmi4"},    # VRROOM port 2 -> TV HDMI4
+    "ugoos": {"app_id": "com.webos.app.hdmi4"},     # VRROOM port 2 -> TV HDMI4
 }
 
 
