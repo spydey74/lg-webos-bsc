@@ -54,6 +54,16 @@ async def async_setup_entry(
         "async_service_set_settings",
     )
     platform.async_register_entity_service(
+        "set_input",
+        {vol.Required("input_id"): cv.string},
+        "async_service_set_input",
+    )
+    platform.async_register_entity_service(
+        "set_sound_output",
+        {vol.Required("output"): cv.string},
+        "async_service_set_sound_output",
+    )
+    platform.async_register_entity_service(
         "command",
         {vol.Required("uri"): cv.string, vol.Optional("payload"): dict},
         "async_service_command",
@@ -229,6 +239,12 @@ class LgWebosBscMediaPlayer(LgWebosBscEntity, MediaPlayerEntity):
 
     async def async_service_set_settings(self, category: str, settings: dict) -> None:
         await self.coordinator.async_set_settings(category, settings)
+
+    async def async_service_set_input(self, input_id: str) -> None:
+        await self.coordinator.async_set_input(input_id)
+
+    async def async_service_set_sound_output(self, output: str) -> None:
+        await self.coordinator.async_set_sound_output(output)
 
     async def async_service_command(self, uri: str, payload: dict | None = None) -> dict:
         """Raw SSAP request, e.g. uri='audio/getVolume'. Returns the response."""

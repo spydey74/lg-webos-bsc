@@ -431,6 +431,15 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_set_input(self, input_id: str) -> None:
         await self.async_command(lambda c: c.set_input(input_id))
 
+    async def async_set_sound_output(self, output: str) -> None:
+        """Change the TV's sound output (bscpylgtv.change_sound_output).
+
+        Used by the reconcile engine to re-assert e.g. external_arc when the TV
+        overrides it. Touches the audio path -- callers should honour the
+        Bluetooth-headphones guard.
+        """
+        await self.async_command(lambda c: c.change_sound_output(output))
+
     async def async_set_volume(self, volume: int) -> None:
         await self.async_command(lambda c: c.set_volume(volume))
 

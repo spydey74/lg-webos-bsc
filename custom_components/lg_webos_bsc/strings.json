@@ -110,6 +110,20 @@
         "settings": { "name": "Settings", "description": "Key/value map to write." }
       }
     },
+    "set_input": {
+      "name": "Set input",
+      "description": "Switch the TV to a physical input.",
+      "fields": {
+        "input_id": { "name": "Input id", "description": "e.g. HDMI_1, HDMI_3." }
+      }
+    },
+    "set_sound_output": {
+      "name": "Set sound output",
+      "description": "Change the TV's audio output (external_arc, tv_speaker, bt_soundbar, ...).",
+      "fields": {
+        "output": { "name": "Output", "description": "e.g. external_arc, tv_speaker, bt_soundbar, bt_headset." }
+      }
+    },
     "command": {
       "name": "Send command (raw SSAP)",
       "description": "Send a raw SSAP request and return the response.",

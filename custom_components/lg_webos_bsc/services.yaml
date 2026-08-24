@@ -40,6 +40,40 @@ set_settings:
       selector:
         object:
 
+set_input:
+  name: Set input
+  description: Switch the TV to a physical input.
+  target:
+    entity:
+      integration: lg_webos_bsc
+      domain: media_player
+  fields:
+    input_id:
+      name: Input id
+      description: e.g. HDMI_1, HDMI_3.
+      required: true
+      example: "HDMI_3"
+      selector:
+        text:
+
+set_sound_output:
+  name: Set sound output
+  description: >-
+    Change the TV's audio output (e.g. external_arc, tv_speaker, bt_soundbar).
+    Touches the audio path — mind the soundbar/eARC drift.
+  target:
+    entity:
+      integration: lg_webos_bsc
+      domain: media_player
+  fields:
+    output:
+      name: Output
+      description: e.g. external_arc, tv_speaker, bt_soundbar, bt_headset.
+      required: true
+      example: "external_arc"
+      selector:
+        text:
+
 command:
   name: Send command (raw SSAP)
   description: Send a raw SSAP request and return the response.
