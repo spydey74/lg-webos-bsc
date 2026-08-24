@@ -29,7 +29,7 @@ DESIRED_SOUND_OUTPUT = "external_arc"
 # TV-only Bluetooth-headphone outputs -> suspend all audio reconciliation.
 HEADPHONE_OUTPUTS = {"bt_headset", "bt_headphone", "bt_headphones", "headphone"}
 
-SETTLE_HELPER = "input_number.av_settle_seconds"
+SETTLE_HELPER = "input_number.av_settle_window_seconds"
 DEFAULT_SETTLE_SECONDS = 12.0
 POLL_SECONDS = 1.0
 STABLE_HOLD_SECONDS = 3.0  # consider it settled after this long unchanged at desired

@@ -36,12 +36,14 @@ to BT headphones and then change Activity.
 
 ## Helpers
 
+Actual entity IDs (created via MCP 2026-08-24; HA auto-slugged the names):
+
 | Helper | Purpose |
 |---|---|
-| `input_boolean.av_network_mode` | master on/off for the whole network path |
-| `input_boolean.av_net_nlziet` / `_kodi` / `_batocera` | per-Activity allowlist |
-| `input_number.av_settle_seconds` | settle-window length (default 12 s) |
-| `binary_sensor.tv_bt_headphones` | derived from the TV's `soundOutput` |
+| `input_boolean.av_network_mode_master` | master on/off for the whole network path |
+| `input_boolean.av_network_nlziet` / `_kodi` / `_batocera` | per-Activity allowlist |
+| `input_number.av_settle_window_seconds` | settle-window length (default 12 s) |
+| `binary_sensor.tv_bluetooth_headphones` | derived from the TV's `soundOutput` |
 
 `input_boolean.lg_tv_use_ir` remains the deeper kill-switch: if the TV is ever
 blocked again upstream, master-off (or the legacy path) restores IR instantly.
