@@ -26,8 +26,14 @@ TV = "media_player.lg_webos_tv_oled83g67lw"
 AUDIO = "sensor.lg_webos_tv_oled83g67lw_audio_settings"  # has the soundOutput attribute
 
 DESIRED_SOUND_OUTPUT = "external_arc"
-# TV-only Bluetooth-headphone outputs -> suspend all audio reconciliation.
-HEADPHONE_OUTPUTS = {"bt_headset", "bt_headphone", "bt_headphones", "headphone"}
+# Headphone detection is centralised in this template binary_sensor (it also
+# disambiguates the ambiguous 'bt_soundbar' output from the real soundbar by
+# checking the soundbar isn't the Bluetooth sink). When on: audio is managed by
+# the TV, not the soundbar (which auto-powers-off with no eARC input).
+HEADPHONE_SENSOR = "binary_sensor.tv_bluetooth_headphones"
+# Bluetooth headphones want their own volume scale (default ~50, vs soundbar 10-20).
+BT_VOLUME_HELPER = "input_number.av_bluetooth_headphone_volume"
+BT_VOLUME_DEFAULT = 50.0
 
 SETTLE_HELPER = "input_number.av_settle_window_seconds"
 DEFAULT_SETTLE_SECONDS = 12.0
@@ -61,8 +67,8 @@ def _sound_output():
     return attrs.get("soundOutput")
 
 
-def _is_headphones(value):
-    return value in HEADPHONE_OUTPUTS
+def _headphones_active():
+    return state.get(HEADPHONE_SENSOR) == "on"
 
 
 def _switch_source(activity, profile):
@@ -87,9 +93,17 @@ def av_tv_reconcile(activity=None):
     # 1) Switch the TV source over the network.
     _switch_source(activity, profile)
 
-    # 2) Headphones guard -- leave all audio to the TV.
-    if _is_headphones(_sound_output()):
-        log.info("av_reconcile[%s]: BT headphones active -> leaving audio to the TV", activity)
+    # 2) Headphones: audio is managed by the TV (no soundbar, no output force, no
+    #    upmix). Set the TV volume to the Bluetooth-headphone level and stop.
+    if _headphones_active():
+        try:
+            bt_vol = float(state.get(BT_VOLUME_HELPER))
+        except (ValueError, TypeError):
+            bt_vol = BT_VOLUME_DEFAULT
+        service.call("media_player", "volume_set", entity_id=TV,
+                     volume_level=max(0.0, min(1.0, bt_vol / 100.0)), blocking=True)
+        log.info("av_reconcile[%s]: BT headphones active -> TV volume %.0f, "
+                 "soundbar left alone", activity, bt_vol)
         return
 
     # 3) Assert + hold the desired sound output for the settle window.
@@ -105,10 +119,10 @@ def av_tv_reconcile(activity=None):
     corrections = 0
 
     for _ in range(iters):
-        cur = _sound_output()
-        if _is_headphones(cur):
+        if _headphones_active():
             log.info("av_reconcile[%s]: headphones connected mid-settle -> stop", activity)
             return
+        cur = _sound_output()
         if cur == DESIRED_SOUND_OUTPUT:
             wrong_streak = 0
             stable += 1
