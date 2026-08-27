@@ -92,6 +92,34 @@ kick the headset off), and sets the **TV volume** to
 mode control** while on Bluetooth, so no mode handling is needed there. Headphones
 are only ever selected mid‑Activity, never at startup.
 
+## Soundbar drift‑watch
+
+The soundbar preset's own 6 s settle‑recheck can miss a **later** drift: on a cold
+NLZiet boot (2026‑08‑27 21:34) the preset applied Standard cleanly and the 6 s
+recheck passed, but at **+23 s** the TV's own `soundMode` flipped `standard →
+aiSound_soundbar` and dragged the soundbar to **AI Sound Pro**, staying wrong for
+~3.5 min. The drift is **TV‑driven** (TV `soundMode` and soundbar `sound_mode`
+move in lockstep), triggered by the TV's per‑input audio memory / eARC
+renegotiation on cold start.
+
+`automation.av_soundbar_drift_watch` handles residual drift, event‑driven:
+
+- `script.h7_soundbar_preset_native` stamps the desired soundbar mode label
+  (`input_text.av_desired_sound_mode_label`), upmix (`input_boolean.av_desired_upmix_state`)
+  and a timestamp (`input_datetime.av_audio_preset_at`) whenever it runs.
+- The automation triggers on `media_player.lg_soundbar` `sound_mode` changing;
+  while within `input_number.av_drift_watch_window` seconds (default 45, max 60,
+  on the dashboard) of that stamp, if the mode drifted away from the desired it
+  re‑asserts the mode via `media_player.select_sound_mode` (+ AI upmix unless the
+  mode is AI Sound Pro). **Volume is left alone** (user‑adjustable). Re‑asserting
+  to the desired makes the trigger self‑terminate (no loop); a
+  `av_soundbar_drift_corrected` notification records each correction.
+
+Works in both IR and network mode (keyed off the preset timestamp, not the master
+toggle). A better *root* fix — asserting the TV's `soundMode` via bscpylgtv so the
+TV stops driving the drift — is a candidate once the `soundMode` write value is
+confirmed on eARC (it is blocked on Bluetooth).
+
 ## Deploy / extend
 
 1. HACS → **pyscript**; copy `pyscript/av_reconcile.py` → `<config>/pyscript/`,
