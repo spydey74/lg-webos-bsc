@@ -116,9 +116,23 @@ renegotiation on cold start.
   `av_soundbar_drift_corrected` notification records each correction.
 
 Works in both IR and network mode (keyed off the preset timestamp, not the master
-toggle). A better *root* fix — asserting the TV's `soundMode` via bscpylgtv so the
-TV stops driving the drift — is a candidate once the `soundMode` write value is
-confirmed on eARC (it is blocked on Bluetooth).
+toggle).
+
+**Root‑level correction (2026‑08‑27).** The TV `soundMode` is writable on eARC
+(`lg_webos_bsc.set_settings(sound, {soundMode: standard|aiSoundPlus})`) and setting
+it drives the soundbar in one shot — the TV is the driver, the soundbar the leaf.
+So:
+- The **engine** asserts the TV `soundMode` right after the input switch for the
+  mapping modes (`standard`→`standard`, `ai_sound`→`aiSoundPlus`, from each
+  activity's `input_select.av_sound_mode_<n>`), fixing the TV's per‑input memory
+  so it's less likely to drift.
+- The **drift‑watch** corrects at the root too: for `Standard`/`AI Sound Pro` it
+  writes the TV `soundMode` (durable — a soundbar‑only correction can be re‑driven
+  by the TV); other eqs (`Bass`/`Custom`/`Clear Voice`) have no TV equivalent and
+  stay soundbar‑side via `media_player.select_sound_mode`.
+
+The drift‑watch remains as a backstop; once real cold boots show no drift, turn
+`av_drift_watch_window` down (or to 0) from the dashboard.
 
 ## Deploy / extend
 

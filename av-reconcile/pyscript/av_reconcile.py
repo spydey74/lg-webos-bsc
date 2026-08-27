@@ -45,6 +45,14 @@ STABLE_HOLD_SECONDS = 3.0  # consider it settled after this long unchanged at de
 # black) when the TV settles to external_arc on its own within a second.
 WRONG_CONFIRM_POLLS = 2
 
+# Root-level sound-mode control: the TV's soundMode drives the soundbar's eq
+# (confirmed live -- setting the TV mode changes the soundbar in one shot). For
+# the modes with a TV equivalent, assert the TV mode after the input switch so
+# the TV's per-input memory is correct and it's less likely to drift the soundbar
+# afterwards. The per-input desired eq lives in input_select.av_sound_mode_<activity>.
+SOUND_MODE_HELPER = "input_select.av_sound_mode_"
+EQ_TO_TV_SOUNDMODE = {"standard": "standard", "ai_sound": "aiSoundPlus"}
+
 # activity -> how to switch the TV source.
 #   app_id    -> lg_webos_bsc.launch_app  (HDMI pseudo-apps + native apps by id)
 #   app_title -> media_player.select_source (launch an app by its list title)
@@ -106,7 +114,17 @@ def av_tv_reconcile(activity=None):
                  "soundbar left alone", activity, bt_vol)
         return
 
-    # 3) Assert + hold the desired sound output for the settle window.
+    # 3) Attack the §8 drift at the root: assert the TV sound mode (which drives
+    #    the soundbar) for the modes that map. Also fixes the TV's per-input
+    #    memory so it's less likely to re-drift. Non-mapping eqs (bass/custom/
+    #    clear_voice) stay soundbar-only via the h7 preset + drift-watch.
+    tv_mode = EQ_TO_TV_SOUNDMODE.get(state.get(SOUND_MODE_HELPER + activity))
+    if tv_mode:
+        service.call("lg_webos_bsc", "set_settings", entity_id=TV,
+                     category="sound", settings={"soundMode": tv_mode}, blocking=True)
+        log.info("av_reconcile[%s]: asserted TV soundMode=%s", activity, tv_mode)
+
+    # 4) Assert + hold the desired sound output for the settle window.
     try:
         settle = float(state.get(SETTLE_HELPER))
     except (ValueError, TypeError):
