@@ -122,14 +122,25 @@ toggle).
 (`lg_webos_bsc.set_settings(sound, {soundMode: standard|aiSoundPlus})`) and setting
 it drives the soundbar in one shot — the TV is the driver, the soundbar the leaf.
 So:
+Official soundbar‑eq → TV `soundMode` mappings (bscpylgtv G6 `supportSoundMode`):
+
+| Soundbar eq | TV `soundMode` | Corrected via |
+|---|---|---|
+| `standard` | `standard` | TV root (confirmed live) |
+| `ai_sound` (AI Sound Pro) | `aiSoundPlus` | TV root (confirmed live) |
+| `bass` (Bass) | `bassBoost` | TV root (1:1) |
+| `custom` (Custom) | `customEq` | TV root (1:1) |
+| `clear_voice_base/high` | `voiceEnhance` | **soundbar‑side** (TV has one `voiceEnhance` for two soundbar modes, so it can't target the exact one) |
+
+(TV `personalized` has no soundbar equivalent.)
+
 - The **engine** asserts the TV `soundMode` right after the input switch for the
-  mapping modes (`standard`→`standard`, `ai_sound`→`aiSoundPlus`, from each
-  activity's `input_select.av_sound_mode_<n>`), fixing the TV's per‑input memory
-  so it's less likely to drift.
-- The **drift‑watch** corrects at the root too: for `Standard`/`AI Sound Pro` it
-  writes the TV `soundMode` (durable — a soundbar‑only correction can be re‑driven
-  by the TV); other eqs (`Bass`/`Custom`/`Clear Voice`) have no TV equivalent and
-  stay soundbar‑side via `media_player.select_sound_mode`.
+  four mapping modes above (from each activity's `input_select.av_sound_mode_<n>`),
+  fixing the TV's per‑input memory so it's less likely to drift. Clear Voice is
+  skipped (would override the precise soundbar setting).
+- The **drift‑watch** corrects those four at the root via the TV `soundMode`
+  (durable — a soundbar‑only correction can be re‑driven by the TV); Clear Voice
+  corrects soundbar‑side via `media_player.select_sound_mode`.
 
 The drift‑watch remains as a backstop; once real cold boots show no drift, turn
 `av_drift_watch_window` down (or to 0) from the dashboard.

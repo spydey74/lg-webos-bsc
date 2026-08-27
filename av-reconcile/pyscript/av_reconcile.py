@@ -51,7 +51,18 @@ WRONG_CONFIRM_POLLS = 2
 # the TV's per-input memory is correct and it's less likely to drift the soundbar
 # afterwards. The per-input desired eq lives in input_select.av_sound_mode_<activity>.
 SOUND_MODE_HELPER = "input_select.av_sound_mode_"
-EQ_TO_TV_SOUNDMODE = {"standard": "standard", "ai_sound": "aiSoundPlus"}
+# Official TV supportSoundMode values (bscpylgtv G6 docs). Only the 1:1 mappings
+# are asserted at the root: standard/aiSoundPlus are confirmed live; bass/custom
+# are 1:1 per the docs. Clear Voice is deliberately excluded -- the TV has a single
+# 'voiceEnhance' for the soundbar's two Clear Voice modes, so a TV assert can't
+# target the exact one and would override the precise soundbar setting; those stay
+# soundbar-only via the h7 preset + the drift-watch's soundbar-side branch.
+EQ_TO_TV_SOUNDMODE = {
+    "standard": "standard",
+    "ai_sound": "aiSoundPlus",
+    "bass": "bassBoost",
+    "custom": "customEq",
+}
 
 # activity -> how to switch the TV source.
 #   app_id    -> lg_webos_bsc.launch_app  (HDMI pseudo-apps + native apps by id)
