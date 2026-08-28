@@ -1,15 +1,25 @@
 # AV reconcile — network Activity path (TV audio override correction)
 
+> **See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the canonical, up‑to‑date system
+> overview** (network‑vs‑IR model, entity tables, deploy/extend, gotchas). This
+> README is the lighter intro.
+
 A **complement** to the existing IR/Sofabaton Activity architecture
 (`AV_Control_Handover.md`), not a replacement. For each Activity it adds a network
-path that:
+path where, as long as the TV integration works, **the TV is the sole audio
+controller** and the soundbar just follows over eARC:
 
 1. switches the TV source over the network (bscpylgtv),
-2. **holds the TV's sound output at `external_arc`** for a short *settle window*,
-   correcting the TV when it overrides the audio path (the §8 drift — now
-   observable via the bscpylgtv audio sensor), and
-3. drives the **soundbar preset from per‑input helpers** (volume / sound mode /
-   AI upmix) in **both** the network and legacy IR branches.
+2. sets the audio from the per‑input helpers — **TV `soundMode`** for the four
+   mapping eqs (Clear Voice + AI upmix stay soundbar‑side), and **TV volume**
+   (applied once, then user‑adjustable),
+3. **holds the TV's sound output at `external_arc`** for a short *settle window*,
+   correcting the TV when it overrides the audio path (the §8 drift).
+
+**As of 2026‑08‑28** the network branch no longer calls
+`h7_soundbar_preset_native` — the pyscript engine owns network‑mode audio. h7
+remains the primary **only for the IR branch (master off)**. The per‑input helpers
+still drive the soundbar preset in the IR branch.
 
 Power stays **IR/Sofabaton** (`script.ensure_tv_on`; WOL from our integration
 doesn't work here). Master‑off = today's behaviour, unchanged. Rolled out to **all
@@ -26,7 +36,8 @@ Switch, Ugoos); NLZiet/Kodi/Batocera validated cold+warm, the rest live‑tested
 | Correction debounce | only correct after `soundOutput` is wrong for 2 polls (ignores a cold‑boot transient) |
 | Persistent override | **notify only** (`av_audio_override_<activity>`) |
 | Bluetooth headphones | audio is TV‑managed: **no soundbar, no output force**; set TV volume to the BT helper; only the video source switches |
-| Per‑input params | volume / sound mode / AI upmix helpers drive the soundbar preset in **both** branches |
+| Per‑input params | volume / sound mode / AI upmix helpers drive the audio in both branches: **network** via the TV integration (engine); **IR** via the soundbar preset |
+| TV‑primary (network) | 2026‑08‑28: in network mode the TV is the sole audio controller (source + soundMode + volume + drift); h7 is IR‑branch‑only |
 
 ## Components
 
@@ -69,13 +80,17 @@ tv_was_cold?  ──▶ script.ensure_tv_on  (IR/Sofabaton power — unchanged)
                     │  (abort+notify if TV never reports on)
                     ▼
    parallel ┌─ nest_display_source
-            ├─ soundbar: h7_soundbar_preset_native (eq/upmix/volume from helpers)
-            │            [SKIPPED entirely if BT headphones active]
-            ├─ pyscript.av_tv_reconcile(activity)   ← switch source; then either
-            │     • BT headphones → set TV volume to the BT helper, stop; or
-            │     • otherwise     → hold external_arc through the settle window
-            └─ per-activity: VRROOM select / Ugreen / Oppo / WOL / Kodi wake
+            ├─ per-activity routing: VRROOM select / Ugreen / Oppo / WOL / Kodi wake
+            └─ pyscript.av_tv_reconcile(activity)  ← owns ALL network-mode audio:
+                  switch source; then
+                  • BT headphones → set TV volume to the BT helper, stop; or
+                  • otherwise → stamp desired; assert TV soundMode (mapping eqs)
+                    or soundbar Clear Voice; AI upmix (soundbar); TV volume once
+                    on external_arc; hold external_arc through the settle window
 ```
+
+(The soundbar preset `h7_soundbar_preset_native` is **not** in the network branch
+any more — it runs only in the IR/default branch.)
 
 ## Bluetooth headphones
 

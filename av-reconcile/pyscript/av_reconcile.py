@@ -1,68 +1,97 @@
 """
-AV reconcile engine (pyscript) -- LG webOS TV audio-output reconciliation.
+AV reconcile engine (pyscript) -- LG webOS TV audio controller (network mode).
 
-Scope (deliberately narrow): after an Activity switches the TV source, the TV
-sometimes overrides the audio path (the §8 drift in AV_Control_Handover.md, now
-observable via the bscpylgtv integration's audio sensor). This engine switches
-the TV to the Activity's source and then, for a short *settle window*, holds the
-TV's sound output at the desired value (external_arc), correcting it if the TV
-flips it away. It does NOT do power (that stays IR/Sofabaton -- WOL doesn't work
-here) and it does NOT touch the soundbar (that stays on the proven native
-h7_soundbar_preset_native path in the Activity script).
+In NETWORK mode (input_boolean.av_network_mode_master + av_network_<activity> on)
+this engine is the SOLE audio controller for an Activity. On eARC the TV is the
+driver and the soundbar is the leaf, and the TV integration (bscpylgtv) is keyed
+into TV startup where the soundbar trails -- so the TV owns everything it can:
 
-Bluetooth-headphones guard: headphones are only ever selected mid-Activity, never
-at startup. If the TV's sound output is already a Bluetooth-headphone output when
-this runs (or becomes one during the settle window), the engine leaves the audio
-entirely to the TV -- no output force, and the caller skips the soundbar preset.
+  * source        -> TV (launch_app / select_source)
+  * sound mode    -> TV soundMode for the four mapping eqs (standard/ai_sound/
+                     bass/custom); Clear Voice has no TV equivalent so it is set
+                     on the soundbar directly
+  * volume        -> TV volume_set (on eARC this drives the soundbar); set ONCE,
+                     then it is the user's -- nothing re-asserts it
+  * AI upmix      -> soundbar switch (no TV equivalent; skipped for AI Sound Pro)
+  * sound output  -> held at external_arc through a short settle window
+  * drift stamp   -> records the desired soundbar mode/upmix/timestamp so
+                     automation.av_soundbar_drift_watch can re-assert TV-driven
+                     drift afterwards (this stamp used to live in
+                     h7_soundbar_preset_native, which network mode no longer calls)
+
+It does NOT do power (that stays IR/Sofabaton -- WOL doesn't work here). The
+soundbar preset script.h7_soundbar_preset_native is NOT called in network mode;
+it remains the primary audio path only for IR mode (master off).
+
+Bluetooth-headphones guard: headphones are only ever selected mid-Activity. If
+they are active the audio is left entirely to the TV -- no soundbar touch, no
+external_arc force (which would kick the headset off) -- and the TV volume is set
+to the Bluetooth-headphone level.
 
 Exposed service: pyscript.av_tv_reconcile(activity=<name>)
 
 Deploy: copy this file to <config>/pyscript/av_reconcile.py (HACS 'pyscript'
-integration installed). It is data-only until an Activity script calls it.
+integration installed) and run pyscript.reload. Data-only until an Activity
+script's network branch calls it.
 """
 
-# --- configuration (entity ids confirmed live 2026-08-24) --------------------
+# --- entities (confirmed live) -----------------------------------------------
 TV = "media_player.lg_webos_tv_oled83g67lw"
-AUDIO = "sensor.lg_webos_tv_oled83g67lw_audio_settings"  # has the soundOutput attribute
+AUDIO = "sensor.lg_webos_tv_oled83g67lw_audio_settings"  # has soundOutput attr
+SOUNDBAR = "media_player.lg_soundbar"
+UPMIX_SWITCH = "switch.living_room_lg_soundbar_ai_upmix"
 
 DESIRED_SOUND_OUTPUT = "external_arc"
 # Headphone detection is centralised in this template binary_sensor (it also
 # disambiguates the ambiguous 'bt_soundbar' output from the real soundbar by
-# checking the soundbar isn't the Bluetooth sink). When on: audio is managed by
-# the TV, not the soundbar (which auto-powers-off with no eARC input).
+# checking the soundbar isn't the Bluetooth sink).
 HEADPHONE_SENSOR = "binary_sensor.tv_bluetooth_headphones"
 # Bluetooth headphones want their own volume scale (default ~50, vs soundbar 10-20).
 BT_VOLUME_HELPER = "input_number.av_bluetooth_headphone_volume"
 BT_VOLUME_DEFAULT = 50.0
+
+# --- per-activity audio helpers (suffix = activity name) ---------------------
+VOLUME_HELPER = "input_number.av_volume_"
+SOUND_MODE_HELPER = "input_select.av_sound_mode_"
+UPMIX_HELPER = "input_boolean.av_ai_upmix_"
+
+# Drift-watch stamp (moved out of h7 for network mode). Small HA script that
+# records input_text.av_desired_sound_mode_label / input_boolean.av_desired_upmix_state
+# / input_datetime.av_audio_preset_at (now()) -- kept in HA so the timestamp is a
+# clean {{ now() }} rather than a pyscript datetime import.
+STAMP_SCRIPT = "av_stamp_desired_audio"
+
+# Soundbar reachability wait before any soundbar-side write (upmix / Clear Voice).
+SOUNDBAR_READY_HELPER = "input_number.h7_soundbar_ready_ceiling"
+SOUNDBAR_READY_DEFAULT = 8.0
 
 SETTLE_HELPER = "input_number.av_settle_window_seconds"
 DEFAULT_SETTLE_SECONDS = 12.0
 POLL_SECONDS = 1.0
 STABLE_HOLD_SECONDS = 3.0  # consider it settled after this long unchanged at desired
 # Ignore a transient wrong value during cold-boot eARC negotiation: only correct
-# after soundOutput has been wrong for this many consecutive polls. Avoids an
-# unnecessary set_sound_output (which itself causes an eARC re-handshake / brief
-# black) when the TV settles to external_arc on its own within a second.
+# after soundOutput has been wrong for this many consecutive polls.
 WRONG_CONFIRM_POLLS = 2
 
-# Root-level sound-mode control: the TV's soundMode drives the soundbar's eq
-# (confirmed live -- setting the TV mode changes the soundbar in one shot). For
-# the modes with a TV equivalent, assert the TV mode after the input switch so
-# the TV's per-input memory is correct and it's less likely to drift the soundbar
-# afterwards. The per-input desired eq lives in input_select.av_sound_mode_<activity>.
-SOUND_MODE_HELPER = "input_select.av_sound_mode_"
-# Official TV supportSoundMode values (bscpylgtv G6 docs). Only the 1:1 mappings
-# are asserted at the root: standard/aiSoundPlus are confirmed live; bass/custom
-# are 1:1 per the docs. Clear Voice is deliberately excluded -- the TV has a single
-# 'voiceEnhance' for the soundbar's two Clear Voice modes, so a TV assert can't
-# target the exact one and would override the precise soundbar setting; those stay
-# soundbar-only via the h7 preset + the drift-watch's soundbar-side branch.
+# The TV's soundMode drives the soundbar's eq (confirmed live). These four map 1:1.
 EQ_TO_TV_SOUNDMODE = {
     "standard": "standard",
     "ai_sound": "aiSoundPlus",
     "bass": "bassBoost",
     "custom": "customEq",
 }
+# Soundbar sound_mode labels (media_player.select_sound_mode + drift stamp).
+EQ_TO_SOUNDBAR_LABEL = {
+    "standard": "Standard",
+    "bass": "Bass",
+    "custom": "Custom",
+    "ai_sound": "AI Sound Pro",
+    "clear_voice_base": "Clear Voice (Base)",
+    "clear_voice_high": "Clear Voice (High)",
+}
+# Clear Voice has no unambiguous TV soundMode (TV's single 'voiceEnhance' covers
+# both), so it is set on the soundbar directly instead of via the TV.
+EQ_SOUNDBAR_ONLY = ("clear_voice_base", "clear_voice_high")
 
 # activity -> how to switch the TV source.
 #   app_id    -> lg_webos_bsc.launch_app  (HDMI pseudo-apps + native apps by id)
@@ -81,6 +110,14 @@ PROFILES = {
 }
 
 
+def _num(entity, default):
+    """Read a numeric helper, falling back to default on unavailable/blank."""
+    try:
+        return float(state.get(entity))
+    except (ValueError, TypeError):
+        return default
+
+
 def _sound_output():
     attrs = state.getattr(AUDIO) or {}
     return attrs.get("soundOutput")
@@ -88,6 +125,13 @@ def _sound_output():
 
 def _headphones_active():
     return state.get(HEADPHONE_SENSOR) == "on"
+
+
+def _set_tv_volume(vol_0_100):
+    level = max(0.0, min(1.0, vol_0_100 / 100.0))
+    service.call("media_player", "volume_set", entity_id=TV,
+                 volume_level=level, blocking=True)
+    return level
 
 
 def _switch_source(activity, profile):
@@ -101,9 +145,21 @@ def _switch_source(activity, profile):
                      source=profile["app_title"], blocking=True)
 
 
+def _wait_soundbar_ready(timeout):
+    """Poll until the soundbar reports source+sound_mode (reachable), or timeout."""
+    waited = 0.0
+    while waited < timeout:
+        attrs = state.getattr(SOUNDBAR) or {}
+        if attrs.get("source") is not None and attrs.get("sound_mode") is not None:
+            return True
+        task.sleep(0.5)
+        waited += 0.5
+    return False
+
+
 @service
 def av_tv_reconcile(activity=None):
-    """Switch the TV to the Activity source and hold external_arc for a settle window."""
+    """Network-mode audio controller: switch source, set TV-driven audio, hold external_arc."""
     profile = PROFILES.get(activity)
     if not profile:
         log.warning("av_tv_reconcile: unknown activity %r", activity)
@@ -112,30 +168,72 @@ def av_tv_reconcile(activity=None):
     # 1) Switch the TV source over the network.
     _switch_source(activity, profile)
 
-    # 2) Headphones: audio is managed by the TV (no soundbar, no output force, no
-    #    upmix). Set the TV volume to the Bluetooth-headphone level and stop.
+    # 2) Headphones: audio is managed by the TV (no soundbar, no output force).
+    #    Set the TV volume to the Bluetooth-headphone level and stop.
     if _headphones_active():
-        try:
-            bt_vol = float(state.get(BT_VOLUME_HELPER))
-        except (ValueError, TypeError):
-            bt_vol = BT_VOLUME_DEFAULT
-        service.call("media_player", "volume_set", entity_id=TV,
-                     volume_level=max(0.0, min(1.0, bt_vol / 100.0)), blocking=True)
-        log.info("av_reconcile[%s]: BT headphones active -> TV volume %.0f, "
-                 "soundbar left alone", activity, bt_vol)
+        _set_tv_volume(_num(BT_VOLUME_HELPER, BT_VOLUME_DEFAULT))
+        log.info("av_reconcile[%s]: BT headphones active -> TV volume set, "
+                 "soundbar left alone", activity)
         return
 
-    # 3) Attack the §8 drift at the root: assert the TV sound mode (which drives
-    #    the soundbar) for the modes that map. Also fixes the TV's per-input
-    #    memory so it's less likely to re-drift. Non-mapping eqs (bass/custom/
-    #    clear_voice) stay soundbar-only via the h7 preset + drift-watch.
-    tv_mode = EQ_TO_TV_SOUNDMODE.get(state.get(SOUND_MODE_HELPER + activity))
+    # 3) Resolve the desired soundbar eq + upmix from the per-activity helpers.
+    eq = state.get(SOUND_MODE_HELPER + activity)
+    eq_label = EQ_TO_SOUNDBAR_LABEL.get(eq)
+    upmix_on = state.get(UPMIX_HELPER + activity) == "on"
+
+    # 4) Stamp the desired soundbar state for the drift-watch (was in h7).
+    if eq_label:
+        try:
+            service.call("script", STAMP_SCRIPT, blocking=True,
+                         sound_mode_label=eq_label, upmix=upmix_on)
+        except Exception as err:
+            log.warning("av_reconcile[%s]: drift stamp failed: %s", activity, err)
+
+    # 5) Sound mode: TV root for the four mapping eqs (drives the soundbar in one
+    #    shot + fixes the TV's per-input memory); soundbar-side for Clear Voice.
+    tv_mode = EQ_TO_TV_SOUNDMODE.get(eq)
     if tv_mode:
         service.call("lg_webos_bsc", "set_settings", entity_id=TV,
                      category="sound", settings={"soundMode": tv_mode}, blocking=True)
         log.info("av_reconcile[%s]: asserted TV soundMode=%s", activity, tv_mode)
 
-    # 4) Assert + hold the desired sound output for the settle window.
+    # 6) Soundbar-only writes (Clear Voice eq + AI upmix). Wait for the soundbar to
+    #    be reachable first; guard each so a not-yet-ready bar can't abort the run
+    #    (the drift-watch backstops the mode afterwards).
+    needs_soundbar = (eq in EQ_SOUNDBAR_ONLY) or (eq != "ai_sound")
+    if needs_soundbar:
+        _wait_soundbar_ready(_num(SOUNDBAR_READY_HELPER, SOUNDBAR_READY_DEFAULT))
+
+    if eq in EQ_SOUNDBAR_ONLY and eq_label:
+        try:
+            service.call("media_player", "select_sound_mode", entity_id=SOUNDBAR,
+                         sound_mode=eq_label, blocking=True)
+            log.info("av_reconcile[%s]: set soundbar sound_mode=%s (no TV equiv)",
+                     activity, eq_label)
+        except Exception as err:
+            log.warning("av_reconcile[%s]: soundbar sound_mode set failed: %s", activity, err)
+
+    # AI upmix is unavailable while eq is AI Sound Pro (the mode disables it).
+    if eq != "ai_sound":
+        try:
+            if upmix_on:
+                service.call("switch", "turn_on", entity_id=UPMIX_SWITCH, blocking=True)
+            else:
+                service.call("switch", "turn_off", entity_id=UPMIX_SWITCH, blocking=True)
+            log.info("av_reconcile[%s]: AI upmix -> %s", activity, upmix_on)
+        except Exception as err:
+            log.warning("av_reconcile[%s]: upmix set failed: %s", activity, err)
+
+    # 7) Volume: read the target now, but apply it inside the settle loop below,
+    #    the first time external_arc is confirmed up. On a warm switch that's the
+    #    very first poll (instant); on a cold boot it's after the eARC handshake,
+    #    so the TV can't re-apply its remembered eARC volume over ours. Set ONCE
+    #    on the TV (which drives the soundbar), then it's the user's -- nothing
+    #    re-asserts it (the TV integration still reports it live).
+    vol = _num(VOLUME_HELPER + activity, None)
+    vol_applied = False
+
+    # 8) Assert + hold the desired sound output for the settle window.
     try:
         settle = float(state.get(SETTLE_HELPER))
     except (ValueError, TypeError):
@@ -153,6 +251,11 @@ def av_tv_reconcile(activity=None):
             return
         cur = _sound_output()
         if cur == DESIRED_SOUND_OUTPUT:
+            if vol is not None and not vol_applied:
+                level = _set_tv_volume(vol)
+                vol_applied = True
+                log.info("av_reconcile[%s]: TV volume set to %.0f (%.2f) on external_arc, "
+                         "user-adjustable", activity, vol, level)
             wrong_streak = 0
             stable += 1
             if stable >= stable_needed:
@@ -172,7 +275,7 @@ def av_tv_reconcile(activity=None):
                 wrong_streak = 0
         task.sleep(POLL_SECONDS)
 
-    # 4) Window expired without a stable settle -> notify only (per decision 4).
+    # Window expired without a stable settle -> notify only (per decision 4).
     cur = _sound_output()
     if cur != DESIRED_SOUND_OUTPUT:
         service.call(
