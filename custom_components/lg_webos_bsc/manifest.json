@@ -7,7 +7,7 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/spydey74/lg-webos-bsc/issues",
   "requirements": [
-    "bscpylgtv==0.5.2",
+    "bscpylgtv==0.5.4",
     "aiowebostv>=0.9.2",
     "wakeonlan>=2.0.0"
   ],
