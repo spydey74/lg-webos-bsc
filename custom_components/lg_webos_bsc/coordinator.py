@@ -65,6 +65,14 @@ _PUSH_CONNECT_TIMEOUT = 20.0
 # also reconnect + retry once rather than just surfacing the error.)
 _CONNECTION_ERRORS = (ConnectionClosed, asyncio.TimeoutError, ConnectionError, OSError)
 
+# Hard ceiling on any single client command. bscpylgtv sends over the websocket and
+# awaits a reply with NO timeout of its own, so on a half-open socket (webOS 26
+# cold-boot handshake; also seen after the bscpylgtv 0.5.4 bump) a command can hang
+# indefinitely -- which parks the caller forever (an Activity script stuck 'running',
+# 2026-09-04 Batocera cold boot). wait_for() turns a hang into asyncio.TimeoutError,
+# which _CONNECTION_ERRORS already routes into reconnect + retry-once.
+_COMMAND_TIMEOUT = 10.0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -425,13 +433,17 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_command(self, coro_factory) -> Any:
         """Run a client command with a connection guarantee, then refresh now.
 
-        Reconnect + retry once on a mid-command socket drop: webOS flaps the socket
-        under load / during a cold-boot handshake, and it can close *while a command
-        is in flight* (is_connected() was True when we started). Without this, a raw
-        websockets.ConnectionClosedOK escapes to the caller and aborts whatever called
-        the service (as it did to the AV engine + reset script, 2026-09-04). We drop
-        the dead client, rebuild the socket, and retry once; a persistent failure
-        surfaces as a clean HomeAssistantError instead of a raw websockets exception.
+        Bounded + reconnect + retry once, covering BOTH failure shapes seen on this
+        firmware:
+          * a *drop* -- the socket closes mid-command and bscpylgtv raises
+            websockets.ConnectionClosedOK (would otherwise escape and abort the caller,
+            as it did to the AV engine + reset script, 2026-09-04); and
+          * a *hang* -- the socket is half-open, so the command awaits a reply that
+            never comes and blocks forever (parked an Activity script 'running' on a
+            Batocera cold boot; more frequent since the bscpylgtv 0.5.4 bump).
+        wait_for() bounds the command (_COMMAND_TIMEOUT); a timeout or a drop drops the
+        dead client, rebuilds the socket, and retries once. A persistent failure
+        surfaces as a clean HomeAssistantError, never a raw exception or an infinite wait.
 
         Uses async_refresh() (immediate) rather than async_request_refresh()
         (debounced ~10s) so volume/mute/source changes reflect in the UI right
@@ -439,16 +451,16 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         try:
             client = await self.async_ensure_connected()
-            result = await coro_factory(client)
+            result = await asyncio.wait_for(coro_factory(client), _COMMAND_TIMEOUT)
         except _CONNECTION_ERRORS as err:
             _LOGGER.debug(
-                "command on %s hit a connection drop (%s); reconnecting + retrying once",
+                "command on %s hit a connection drop/hang (%s); reconnecting + retrying once",
                 self.host, err,
             )
             await self.async_shutdown_client()  # force a fresh socket on the retry
             try:
                 client = await self.async_ensure_connected()
-                result = await coro_factory(client)
+                result = await asyncio.wait_for(coro_factory(client), _COMMAND_TIMEOUT)
             except Exception as err2:  # noqa: BLE001
                 raise HomeAssistantError(
                     f"lg_webos_bsc command on {self.host} failed after reconnect: {err2}"
