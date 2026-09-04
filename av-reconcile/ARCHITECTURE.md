@@ -285,6 +285,14 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑04 — command hang (bscpylgtv 0.5.4 regression)**: a cold‑boot Batocera run
+  parked the Activity script `running` forever — the engine's TV command awaited a reply
+  on a half‑open socket that never came (bscpylgtv has `ping_interval=None` + no recv
+  timeout; v0.5.4's PR #8 removed the accidental teardown‑crash that used to self‑heal it —
+  root cause in §9). Integration hardened (`lg_webos_bsc` 0.1.2/0.1.3): commands bounded by
+  `wait_for` (hang → reconnect+retry), poll getters bounded, and a timed‑out power read
+  drops the wedged socket so the poll rebuilds. Cleared the stuck run via `pyscript.reload`
+  (a wedged script needs an HA restart to fully clear).
 - **2026‑09‑04 — manual Reset button** (`script.av_reset_audio`, §2g): delegates to the
   engine's `reset` mode (Python‑guarded, always soundbar‑direct h7). **Validated live:**
   ran `execution=finished`, held the Batocera standard (AI Sound Pro / vol 10 / ARC / eARC),
@@ -328,3 +336,35 @@ subscriptions and 500s/401s some getters — the official model assumes a better
 stack. **Could still adopt if flapping persists:** route the few direct‑client methods
 (`async_remote_button`, `async_send_message`, `async_set_game_genre`) through the same
 guard, and consider `aiowebostv`'s newer client if bscpylgtv's reconnect proves weaker.
+
+### 9a. The bscpylgtv 0.5.4 hang (root cause + our layered mitigation)
+**Where it comes from.** bscpylgtv opens the control socket with
+`websockets.connect(..., ping_interval=None, ...)` — **keepalive disabled** — and its
+receive loop (`async for raw_msg in ws:`) has **no read timeout**. So a *half‑open* TCP
+socket (silently dead, no close frame — common right after a cold‑boot handshake) wedges
+that loop: `connect_task` never finishes, `is_connected()` (= "task not done") keeps
+reporting **True**, and command response futures in `self.futures` (resolved only by the
+recv loop, cancelled only in its `finally`) **never resolve → the command hangs forever.**
+On **0.5.2** this self‑healed by accident — the teardown hit an `asyncio.wait()` `TypeError`
+on Python 3.11+, which *completed* the task → `is_connected()` False → our poll reconnected.
+**v0.5.4 PR #8** ("Fix teardown closeout crash on Python 3.11+") wrapped the closeout
+callbacks in `ensure_future` to remove that crash — correct in itself, but it removed the
+accidental self‑heal, so on 2026.09 (Python 3.14) the wedge now sits indefinitely. Hence
+"the 0.5.4 hang fix made hangs worse."
+
+**Why not pin to 0.5.2:** its teardown `TypeError` fires on every disconnect on Python 3.14
+(worse), and it predates 0.5.3's webOS 26 manifest support. Stay on 0.5.4+.
+
+**Our mitigation (all in `coordinator.py`, no bscpylgtv patch):**
+- **Command timeout** (0.1.2) — `async_command` bounds each attempt with `wait_for`
+  (`_COMMAND_TIMEOUT` 10 s); a hang → `TimeoutError` → reconnect + retry‑once → clean error.
+- **Poll getter timeout** (0.1.3) — `_safe_call` bounded by `_POLL_CALL_TIMEOUT` (5 s) so a
+  wedged socket can't hang the poll.
+- **Liveness canary** (0.1.3) — a *timed‑out* `get_power_state` in the poll drops the client
+  (`async_shutdown_client`), so the next 5 s poll rebuilds a fresh socket. Proactive heal.
+
+**Proper upstream fix (recommended, not yet done):** give bscpylgtv's recv loop a read
+timeout, or a keepalive that tolerates webOS (it disabled `ping_interval` for a reason —
+webOS may not reliably PONG, so enabling ping blindly risks spurious drops). File an issue /
+PR on `chros73/bscpylgtv`. Until then, the three timeouts above fully bound the failure on
+our side.

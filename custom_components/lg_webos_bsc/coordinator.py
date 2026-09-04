@@ -73,6 +73,13 @@ _CONNECTION_ERRORS = (ConnectionClosed, asyncio.TimeoutError, ConnectionError, O
 # which _CONNECTION_ERRORS already routes into reconnect + retry-once.
 _COMMAND_TIMEOUT = 10.0
 
+# Ceiling on a single poll getter. bscpylgtv opens the socket with ping_interval=None
+# (no keepalive) and its recv loop has no read timeout, so a half-open socket wedges
+# the receive loop while is_connected() still reports True. Bound each getter, and use
+# the power read as a liveness canary: if it *times out* the socket is wedged, so we
+# drop the client and let the next poll rebuild it (proactive heal, ~1 poll cycle).
+_POLL_CALL_TIMEOUT = 5.0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -305,8 +312,20 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["muted"] = await self._safe_call(client.get_muted)
             data["sound_output"] = await self._safe_call(client.get_sound_output)
 
-        power = await self._safe_call(client.get_power_state)
-        data["power"] = self._interpret_power(power)
+        # Liveness canary (see _POLL_CALL_TIMEOUT). A *timed-out* power read means the
+        # socket is wedged half-open (no keepalive/recv-timeout in bscpylgtv) -> drop it
+        # so the next poll rebuilds, rather than leaving is_connected() lying True and
+        # letting commands hang into it. Other (non-timeout) failures are tolerated.
+        try:
+            power = await asyncio.wait_for(client.get_power_state(), _POLL_CALL_TIMEOUT)
+            data["power"] = self._interpret_power(power)
+        except asyncio.TimeoutError:
+            _LOGGER.debug("power read on %s timed out; dropping wedged socket", self.host)
+            await self.async_shutdown_client()
+            return self._offline_data()
+        except Exception as exc:  # noqa: BLE001 -- tolerate transient read failures
+            _LOGGER.debug("power read on %s failed: %s", self.host, exc)
+            data["power"] = self._interpret_power(None)
 
         # Apps/inputs change rarely and each read can cost a full silent-drop
         # timeout, so fetch them only once (when the cache is empty) and reuse
@@ -397,9 +416,14 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     async def _safe_call(self, func, *args):
-        """Call a client getter, returning None on any failure or silent drop."""
+        """Call a client getter, returning None on any failure, silent drop, or hang.
+
+        Bounded by _POLL_CALL_TIMEOUT so a half-open socket (bscpylgtv has no keepalive
+        or recv timeout) can't wedge the whole poll -- the getter just yields None and
+        the caller reuses its cached snapshot.
+        """
         try:
-            return await func(*args)
+            return await asyncio.wait_for(func(*args), _POLL_CALL_TIMEOUT)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("poll %s failed: %s", getattr(func, "__name__", func), exc)
             return None
