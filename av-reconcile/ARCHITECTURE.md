@@ -295,10 +295,10 @@ Fixes since, newest first:
   grace) — a dead socket now raises `ConnectionClosed` in the recv loop → task completes →
   `is_connected()` False → the coordinator reconnects. This *prevents* the wedge at the
   source rather than reacting to it, restoring (deterministically) the pre‑0.5.4 auto‑recovery.
-  The 0.1.4 ceilings below remain as a backstop. Needs a live confirmation that webOS 26
-  answers protocol PINGs cleanly (watch for reconnect churn) — if a firmware ever ignored
-  PINGs the shim would drop healthy sockets, but the official/aiowebostv stacks use keepalive
-  on webOS, and the generous 20 s grace only fails a genuinely dead socket.
+  The 0.1.4 ceilings below remain as a backstop. **Validated live (2026‑09‑05, 00:39–00:43):**
+  with the shim active, ~4 min of debug polling (every ~5 s, ~8 keepalive cycles) ran 100 %
+  `success: True` with **zero** reconnects/downgrades/timeouts — webOS 26 answers the protocol
+  PINGs cleanly, no spurious drops. Still to see: a real cold boot (the original failure trigger).
 - **2026‑09‑04 (late) — coordinator‑loop wedge (the 0.1.3 fix was incomplete)**: after 0.1.3,
   a warm‑idle TV coordinator still wedged — TV entities froze at 20:51 and stayed frozen,
   and the next two Activity runs (NLZiet 21:33, Batocera 22:03) parked `running`. Root cause:
