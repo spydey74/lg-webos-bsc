@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from bscpylgtv import WebOsClient
+from websockets.exceptions import ConnectionClosed
 
 from homeassistant.exceptions import HomeAssistantError
 
@@ -55,6 +56,14 @@ _SUBSCRIBE_STATES = ["power", "current_app", "muted", "volume", "sound_output"]
 # bscpylgtv awaits subscription setup with no timeout; if a subscription silently
 # drops, connect() can hang. Bound it, and fall back to pure polling on timeout.
 _PUSH_CONNECT_TIMEOUT = 20.0
+
+# Connection drops a command should transparently reconnect + retry through: webOS
+# flaps the socket under load and during the cold-boot handshake, closing it
+# mid-command so a raw exception would otherwise escape to the caller. ConnectionClosed
+# is the base of both ConnectionClosedOK and ConnectionClosedError. (Mirrors how the
+# official webostv integration's @cmd decorator swallows WEBOSTV_EXCEPTIONS, but we
+# also reconnect + retry once rather than just surfacing the error.)
+_CONNECTION_ERRORS = (ConnectionClosed, asyncio.TimeoutError, ConnectionError, OSError)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -416,12 +425,34 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_command(self, coro_factory) -> Any:
         """Run a client command with a connection guarantee, then refresh now.
 
+        Reconnect + retry once on a mid-command socket drop: webOS flaps the socket
+        under load / during a cold-boot handshake, and it can close *while a command
+        is in flight* (is_connected() was True when we started). Without this, a raw
+        websockets.ConnectionClosedOK escapes to the caller and aborts whatever called
+        the service (as it did to the AV engine + reset script, 2026-09-04). We drop
+        the dead client, rebuild the socket, and retry once; a persistent failure
+        surfaces as a clean HomeAssistantError instead of a raw websockets exception.
+
         Uses async_refresh() (immediate) rather than async_request_refresh()
         (debounced ~10s) so volume/mute/source changes reflect in the UI right
         away instead of lagging up to the debounce cooldown.
         """
-        client = await self.async_ensure_connected()
-        result = await coro_factory(client)
+        try:
+            client = await self.async_ensure_connected()
+            result = await coro_factory(client)
+        except _CONNECTION_ERRORS as err:
+            _LOGGER.debug(
+                "command on %s hit a connection drop (%s); reconnecting + retrying once",
+                self.host, err,
+            )
+            await self.async_shutdown_client()  # force a fresh socket on the retry
+            try:
+                client = await self.async_ensure_connected()
+                result = await coro_factory(client)
+            except Exception as err2:  # noqa: BLE001
+                raise HomeAssistantError(
+                    f"lg_webos_bsc command on {self.host} failed after reconnect: {err2}"
+                ) from err2
         await self.async_refresh()
         return result
 
