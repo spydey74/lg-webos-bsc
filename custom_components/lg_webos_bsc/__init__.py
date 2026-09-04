@@ -18,6 +18,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import LgWebosBscCoordinator
+from .patch import patch_bscpylgtv_keepalive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +37,11 @@ type LgWebosBscConfigEntry = ConfigEntry[LgWebosBscCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: LgWebosBscConfigEntry) -> bool:
     """Set up LG webOS (bscpylgtv) from a config entry."""
+    # Restore websockets keepalive on bscpylgtv (idempotent) BEFORE any connect, so a
+    # half-open socket self-heals at the source instead of wedging the recv loop. See
+    # patch.py for the full rationale (the root of the 0.5.4 hang).
+    patch_bscpylgtv_keepalive()
+
     host = entry.data[CONF_HOST]
     client_key = entry.data.get(CONF_CLIENT_KEY)
     mac = entry.options.get(CONF_MAC) or entry.data.get(CONF_MAC)

@@ -285,6 +285,20 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑04 (late) — SOURCE‑LEVEL fix: restored bscpylgtv keepalive** (`lg_webos_bsc`
+  **0.1.5**, `patch.py`): the root cause of the whole 0.5.4 hang saga was that bscpylgtv
+  opens both its sockets with `ping_interval=None` (keepalive OFF) and has no recv timeout,
+  so a half‑open socket wedges the recv loop while `is_connected()` still reports True.
+  0.5.2 self‑healed this *by accident* (a teardown crash completed the task); 0.5.4 removed
+  that crash. We now re‑enable websockets keepalive via a surgical proxy over
+  `bscpylgtv.webos_client.websockets` (scoped to bscpylgtv only; ping every 30 s, 20 s PONG
+  grace) — a dead socket now raises `ConnectionClosed` in the recv loop → task completes →
+  `is_connected()` False → the coordinator reconnects. This *prevents* the wedge at the
+  source rather than reacting to it, restoring (deterministically) the pre‑0.5.4 auto‑recovery.
+  The 0.1.4 ceilings below remain as a backstop. Needs a live confirmation that webOS 26
+  answers protocol PINGs cleanly (watch for reconnect churn) — if a firmware ever ignored
+  PINGs the shim would drop healthy sockets, but the official/aiowebostv stacks use keepalive
+  on webOS, and the generous 20 s grace only fails a genuinely dead socket.
 - **2026‑09‑04 (late) — coordinator‑loop wedge (the 0.1.3 fix was incomplete)**: after 0.1.3,
   a warm‑idle TV coordinator still wedged — TV entities froze at 20:51 and stayed frozen,
   and the next two Activity runs (NLZiet 21:33, Batocera 22:03) parked `running`. Root cause:
@@ -388,10 +402,17 @@ accidental self‑heal, so on 2026.09 (Python 3.14) the wedge now sits indefinit
   network‑facing client await is capped — the class of bug (an unbounded bscpylgtv await
   anywhere wedging the loop), not just the instances found so far, is closed.
 
-**Proper upstream fix (recommended, not yet done):** give bscpylgtv's recv loop a read
-timeout, or a keepalive that tolerates webOS (it disabled `ping_interval` for a reason —
-webOS may not reliably PONG, so enabling ping blindly risks spurious drops). File an issue /
-PR on `chros73/bscpylgtv`. Our ceilings turn the hang into a bounded reconnect, but they
-still *react* after up to 30 s; the read‑timeout would prevent the wedge at the source.
-We could also apply it locally as a monkeypatch in `patch.py` (we already patch the client
-there) without waiting upstream — offered, needs a live cold‑boot test before shipping.
+- **Source‑level keepalive** (0.1.5) — **the actual root fix.** `patch.py`'s
+  `patch_bscpylgtv_keepalive()` proxies `bscpylgtv.webos_client.websockets` and re‑enables
+  the keepalive bscpylgtv disabled (`ping_interval=None` → 30 s ping / 20 s PONG grace),
+  scoped to bscpylgtv only. A dead socket now fails a PING → `ConnectionClosed` in the recv
+  loop → `connect_task` completes → `is_connected()` False → reconnect. Prevents the wedge
+  instead of reacting to it; installed once in `async_setup_entry` before any connect.
+
+**On the old "webOS may not PONG" worry:** the concern that bscpylgtv disabled
+`ping_interval` deliberately turned out not to be load‑bearing — the official HA `webostv` +
+`aiowebostv` run keepalive on webOS TVs fine, and our 20 s PONG grace only fails a genuinely
+dead socket. If a future firmware ever ignored protocol PINGs, the shim would drop healthy
+sockets; the coordinator ceilings above are the backstop, and we'd raise the grace or revert
+the shim. Worth filing upstream on `chros73/bscpylgtv` (a recv read‑timeout or re‑enabled
+keepalive) so the fork isn't needed, but the local patch fully resolves it for us now.

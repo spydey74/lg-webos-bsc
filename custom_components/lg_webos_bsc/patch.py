@@ -114,3 +114,93 @@ def apply_manifest(client) -> None:
         len(CANONICAL_MANIFEST.get("permissions", [])),
         _MANIFEST_SOURCE,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Keepalive patch (source-level fix for the bscpylgtv half-open-socket hang).  #
+# --------------------------------------------------------------------------- #
+#
+# bscpylgtv opens BOTH its sockets (control + input) with
+# `websockets.connect(..., ping_interval=None, ...)` -- keepalive OFF -- and its
+# receive loop has no read timeout. `is_connected()` is just
+# `connect_task is not None and not connect_task.done()`. So a *half-open* TCP socket
+# (silently dead, no close frame -- what webOS leaves after a cold-boot handshake or a
+# network blip) wedges the recv loop forever: connect_task never finishes,
+# is_connected() keeps reporting True, and command futures never resolve -> commands
+# hang indefinitely. On bscpylgtv 0.5.2 this self-healed *by accident* (a teardown
+# TypeError completed the task); 0.5.4's PR #8 removed that crash, so on HA 2026.09 /
+# Python 3.14 the wedge became permanent (the "0.5.4 made hangs worse" regression).
+#
+# The correct source-level fix is to re-enable websockets keepalive, which bscpylgtv
+# never should have disabled: websockets then PINGs the TV, and a dead socket that
+# doesn't PONG within ping_timeout raises ConnectionClosed in the recv loop -> the task
+# completes -> is_connected() goes False -> the coordinator reconnects on the next poll.
+# This restores (deterministically) the same auto-recovery 0.5.2 gave by accident.
+#
+# We do NOT fork bscpylgtv. bscpylgtv.webos_client does `import websockets` then calls
+# `websockets.connect(...)`, so we replace that module's `websockets` reference with a
+# thin proxy that injects keepalive whenever ping_interval is explicitly None, and
+# passes everything else straight through. Scoped to bscpylgtv only -- HA core, Kodi,
+# etc. keep the stock websockets. Generous, forgiving values so a healthy-but-briefly-
+# quiet TV is never dropped: a PING every 30 s, and 20 s of grace for the PONG (a real
+# TV answers in milliseconds; only a genuinely dead socket misses it). The coordinator's
+# wait_for ceilings remain as a backstop if a firmware ever ignores protocol PINGs.
+_KEEPALIVE_PING_INTERVAL = 30.0
+_KEEPALIVE_PING_TIMEOUT = 20.0
+
+_keepalive_patched = False
+
+
+class _WebsocketsKeepaliveShim:
+    """Proxy for the `websockets` module that forces keepalive on bscpylgtv's connects.
+
+    Only `connect()` is intercepted, and only when the caller explicitly passed
+    ping_interval=None (which is exactly what bscpylgtv does). Every other attribute
+    access (exceptions, connection classes, ...) proxies to the real module unchanged.
+    """
+
+    def __init__(self, real) -> None:
+        # Store on __dict__ directly so __getattr__ can't recurse resolving `_real`.
+        self.__dict__["_real"] = real
+
+    def connect(self, *args, **kwargs):
+        # `False` sentinel distinguishes "explicitly None" (patch it) from "absent"
+        # (leave whatever default the caller/library intends).
+        if kwargs.get("ping_interval", False) is None:
+            kwargs["ping_interval"] = _KEEPALIVE_PING_INTERVAL
+            kwargs.setdefault("ping_timeout", _KEEPALIVE_PING_TIMEOUT)
+        return self._real.connect(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def patch_bscpylgtv_keepalive() -> None:
+    """Install the keepalive shim over bscpylgtv.webos_client.websockets (idempotent).
+
+    Safe to call on every setup; wraps the real module exactly once. On any failure we
+    log and carry on -- the coordinator's timeouts still bound the failure, just reacting
+    after a poll cycle instead of preventing the wedge outright.
+    """
+    global _keepalive_patched
+    if _keepalive_patched:
+        return
+    try:
+        from bscpylgtv import webos_client
+
+        current = getattr(webos_client, "websockets", None)
+        if isinstance(current, _WebsocketsKeepaliveShim):
+            _keepalive_patched = True
+            return
+        webos_client.websockets = _WebsocketsKeepaliveShim(current)
+        _keepalive_patched = True
+        _LOGGER.info(
+            "Patched bscpylgtv websockets keepalive (ping_interval=%.0fs, "
+            "ping_timeout=%.0fs) -- half-open sockets now self-heal at the source",
+            _KEEPALIVE_PING_INTERVAL, _KEEPALIVE_PING_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 -- never block setup on the patch
+        _LOGGER.warning(
+            "Could not patch bscpylgtv keepalive (%s); falling back to the "
+            "coordinator's wait_for ceilings", exc,
+        )
