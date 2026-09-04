@@ -285,6 +285,21 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑04 (late) — coordinator‑loop wedge (the 0.1.3 fix was incomplete)**: after 0.1.3,
+  a warm‑idle TV coordinator still wedged — TV entities froze at 20:51 and stayed frozen,
+  and the next two Activity runs (NLZiet 21:33, Batocera 22:03) parked `running`. Root cause:
+  0.1.2/0.1.3 bounded each *command* and each *poll getter*, but **the poll cycle as a whole,
+  `connect()`, and `_safe_disconnect()` were still unbounded** — and `async_command` ends with
+  `await self.async_refresh()`. So once a poll wedged in the connect/refresh/lock path (not in
+  a getter), the DataUpdateCoordinator loop stopped *and* every subsequent blocking TV command
+  hung on the dead refresh → the engine's `blocking=True` calls parked the scripts. Fix
+  (`lg_webos_bsc` **0.1.4**), structural rather than another point‑timeout: a hard ceiling on
+  the **whole** poll cycle (`_POLL_CYCLE_TIMEOUT` 30 s → drop client + report offline), both
+  `connect()` paths bounded (`_CONNECT_TIMEOUT` 25 s), `_safe_disconnect` bounded, the trailing
+  `async_refresh` made non‑fatal, and the three direct‑client methods (`button`/`send_message`/
+  `set_game_genre`) + the sound‑settings reads bounded. Every network‑facing client await in the
+  coordinator is now capped, so the loop can never wedge regardless of what bscpylgtv does.
+  Recovered the live wedge with an HA restart. Awaiting a real cold boot to confirm.
 - **2026‑09‑04 — command hang (bscpylgtv 0.5.4 regression)**: a cold‑boot Batocera run
   parked the Activity script `running` forever — the engine's TV command awaited a reply
   on a half‑open socket that never came (bscpylgtv has `ping_interval=None` + no recv
@@ -362,9 +377,21 @@ accidental self‑heal, so on 2026.09 (Python 3.14) the wedge now sits indefinit
   wedged socket can't hang the poll.
 - **Liveness canary** (0.1.3) — a *timed‑out* `get_power_state` in the poll drops the client
   (`async_shutdown_client`), so the next 5 s poll rebuilds a fresh socket. Proactive heal.
+- **Whole‑cycle + connect + disconnect ceilings** (0.1.4) — the decisive one. 0.1.2/0.1.3
+  bounded the *pieces* but not the *composition*: `connect()` (under `_connect_lock`), the
+  full poll sequence, `_safe_disconnect()`, and the `async_refresh()` chained onto every
+  command were all still unbounded, so a hang in any of them froze the coordinator loop and,
+  through the trailing refresh, hung every blocking command into it (observed 20:51 freeze +
+  two wedged scripts, same day). 0.1.4 wraps the entire poll in `_POLL_CYCLE_TIMEOUT` (30 s),
+  both `connect()` paths + `_safe_disconnect` in explicit `wait_for`, makes the trailing
+  refresh non‑fatal, and routes the last direct‑client methods through `wait_for`. Now **every**
+  network‑facing client await is capped — the class of bug (an unbounded bscpylgtv await
+  anywhere wedging the loop), not just the instances found so far, is closed.
 
 **Proper upstream fix (recommended, not yet done):** give bscpylgtv's recv loop a read
 timeout, or a keepalive that tolerates webOS (it disabled `ping_interval` for a reason —
 webOS may not reliably PONG, so enabling ping blindly risks spurious drops). File an issue /
-PR on `chros73/bscpylgtv`. Until then, the three timeouts above fully bound the failure on
-our side.
+PR on `chros73/bscpylgtv`. Our ceilings turn the hang into a bounded reconnect, but they
+still *react* after up to 30 s; the read‑timeout would prevent the wedge at the source.
+We could also apply it locally as a monkeypatch in `patch.py` (we already patch the client
+there) without waiting upstream — offered, needs a live cold‑boot test before shipping.

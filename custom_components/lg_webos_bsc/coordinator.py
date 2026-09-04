@@ -80,6 +80,21 @@ _COMMAND_TIMEOUT = 10.0
 # drop the client and let the next poll rebuild it (proactive heal, ~1 poll cycle).
 _POLL_CALL_TIMEOUT = 5.0
 
+# Absolute ceiling on ONE full poll cycle. The per-getter bound above caps each call,
+# but connect(), the connect lock, and the composed getter sequence were unbounded as a
+# whole -- so a wedged connect (or a pile-up of slow calls) could still park the
+# coordinator's DataUpdateCoordinator loop forever. When that loop stops, the TV
+# entities freeze AND every subsequent async_command (which ends with an await on
+# async_refresh) hangs its caller -- which is exactly what wedged two Activity scripts
+# on 2026-09-04 (TV entities frozen at 20:51, NLZiet 21:33 + Batocera 22:03 stuck
+# 'running'). Bounding the whole cycle guarantees the loop always returns and reschedules.
+_POLL_CYCLE_TIMEOUT = 30.0
+
+# Ceiling on (re)establishing the connection, covering connect() on BOTH the push and
+# the downgraded pure-polling path. connect() is awaited under _connect_lock, so an
+# unbounded hang there blocks not just the poll but every command waiting on the lock.
+_CONNECT_TIMEOUT = 25.0
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -223,10 +238,11 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             client = await self._build_client()
             try:
-                if self._push_mode:
-                    await asyncio.wait_for(client.connect(), timeout=_PUSH_CONNECT_TIMEOUT)
-                else:
-                    await client.connect()
+                # Bound connect() on BOTH paths: push subscription setup can hang, and a
+                # half-open socket can wedge even a plain connect. wait_for turns either
+                # into TimeoutError instead of parking the whole coordinator under the lock.
+                connect_timeout = _PUSH_CONNECT_TIMEOUT if self._push_mode else _CONNECT_TIMEOUT
+                await asyncio.wait_for(client.connect(), timeout=connect_timeout)
             except asyncio.TimeoutError:
                 await self._safe_disconnect(client)
                 if self._push_mode:
@@ -237,7 +253,7 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     self._push_mode = False
                     client = await self._build_client()
-                    await client.connect()
+                    await asyncio.wait_for(client.connect(), timeout=_CONNECT_TIMEOUT)
                 else:
                     raise
 
@@ -272,8 +288,11 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     async def _safe_disconnect(client: WebOsClient) -> None:
+        # Bounded: disconnect() on a half-open socket can itself hang, and this runs both
+        # under _connect_lock and on the command reconnect path -- an unbounded hang here
+        # would defeat the reconnect it is meant to enable.
         try:
-            await client.disconnect()
+            await asyncio.wait_for(client.disconnect(), _POLL_CALL_TIMEOUT)
         except Exception:  # noqa: BLE001 -- best effort
             pass
 
@@ -285,6 +304,24 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------ poll
 
     async def _async_update_data(self) -> dict[str, Any]:
+        """Bound the whole poll cycle so the coordinator loop can never wedge.
+
+        The per-call timeouts below cap individual getters, but connect() + the connect
+        lock + the composed sequence were unbounded as a whole. A single hard ceiling here
+        guarantees the DataUpdateCoordinator loop always returns and reschedules; on
+        timeout we drop the (wedged) client and report offline so the next cycle rebuilds.
+        """
+        try:
+            return await asyncio.wait_for(self._poll_once(), _POLL_CYCLE_TIMEOUT)
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "poll cycle on %s exceeded %.0fs; dropping client + reporting offline",
+                self.host, _POLL_CYCLE_TIMEOUT,
+            )
+            await self.async_shutdown_client()
+            return self._offline_data()
+
+    async def _poll_once(self) -> dict[str, Any]:
         """Poll a minimal, individually-tolerant state set.
 
         A TV that is merely off/unreachable is reported as power=off (entities
@@ -369,14 +406,20 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if self._sound_keys is None:
             try:
-                res = await client.get_system_settings(SOUND_CATEGORY, list(SOUND_SETTINGS_KEYS))
+                res = await asyncio.wait_for(
+                    client.get_system_settings(SOUND_CATEGORY, list(SOUND_SETTINGS_KEYS)),
+                    _POLL_CALL_TIMEOUT,
+                )
                 self._sound_keys = list(SOUND_SETTINGS_KEYS)
                 return (res or {}).get("settings") or {}
             except Exception:  # noqa: BLE001 -- discover the good subset one by one
                 good: dict[str, Any] = {}
                 for key in SOUND_SETTINGS_KEYS:
                     try:
-                        res = await client.get_system_settings(SOUND_CATEGORY, [key])
+                        res = await asyncio.wait_for(
+                            client.get_system_settings(SOUND_CATEGORY, [key]),
+                            _POLL_CALL_TIMEOUT,
+                        )
                         settings = (res or {}).get("settings") or {}
                         if key in settings:
                             good[key] = settings[key]
@@ -392,7 +435,10 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._sound_keys:
             return {}
         try:
-            res = await client.get_system_settings(SOUND_CATEGORY, list(self._sound_keys))
+            res = await asyncio.wait_for(
+                client.get_system_settings(SOUND_CATEGORY, list(self._sound_keys)),
+                _POLL_CALL_TIMEOUT,
+            )
             return (res or {}).get("settings") or {}
         except Exception:  # noqa: BLE001 -- transient; caller reuses the last snapshot
             return {}
@@ -489,7 +535,14 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise HomeAssistantError(
                     f"lg_webos_bsc command on {self.host} failed after reconnect: {err2}"
                 ) from err2
-        await self.async_refresh()
+        # The command already succeeded; the refresh is only to reflect it in the UI
+        # promptly. _async_update_data is self-bounded, but guard here too so a slow/failed
+        # refresh can NEVER turn a good command into a hang or an error for the caller
+        # (this trailing await is what parked the AV engine's blocking calls, 2026-09-04).
+        try:
+            await self.async_refresh()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("post-command refresh on %s did not complete: %s", self.host, err)
         return result
 
     async def async_launch_app(self, app_id: str) -> None:
@@ -559,12 +612,12 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_remote_button(self, name: str) -> None:
         """Send a remote key via the input/pointer socket (may 401 on this firmware)."""
         client = await self.async_ensure_connected()
-        await client.button(name)
+        await asyncio.wait_for(client.button(name), _COMMAND_TIMEOUT)
 
     async def async_send_message(self, message: str) -> None:
         """Show an on-screen toast (bscpylgtv.send_message)."""
         client = await self.async_ensure_connected()
-        await client.send_message(message)
+        await asyncio.wait_for(client.send_message(message), _COMMAND_TIMEOUT)
 
     async def async_wake(self) -> None:
         """Power on via Wake-on-LAN.
@@ -605,7 +658,10 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         notify listeners, which makes the select reflect it immediately.
         """
         client = await self.async_ensure_connected()
-        await client.set_settings(GAME_GENRE_CATEGORY, {GAME_GENRE_KEY: genre})
+        await asyncio.wait_for(
+            client.set_settings(GAME_GENRE_CATEGORY, {GAME_GENRE_KEY: genre}),
+            _COMMAND_TIMEOUT,
+        )
         self.last_game_genre = genre
         base = dict(self.data) if self.data else {}
         base["game_genre"] = genre
