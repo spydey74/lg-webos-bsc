@@ -51,19 +51,47 @@ Quirks: WOL does **not** work from HA here (environmental) → power stays
 IR/Sofabaton. Some sound keys are write‑only (500 on read). `soundMode` **is**
 writable on eARC and drives the soundbar in one shot.
 
+**Ours to maintain:** we (Claude Code) authored this integration and `lg_soundbar_plus`
+— connection / reconnect / state bugs are fixed *here*, not just worked around in the
+engine (see the `we-own-lg-custom-integrations` memory + §9). **Connection hardening
+(2026‑09‑04):** `coordinator.async_command` now reconnects + retries once on a
+mid‑command socket drop (`ConnectionClosed`/timeout), then raises a clean
+`HomeAssistantError` — webOS flaps the socket under load / on a cold‑boot handshake, and a
+raw `websockets.ConnectionClosedOK` used to escape to callers (it crashed the AV engine +
+reset script). The poll path already reconnects each cycle when `is_connected()` is False.
+
 ### 2b. Engine — `pyscript.av_tv_reconcile(activity)`  (`pyscript/av_reconcile.py`)
 The **sole network‑mode audio controller**. Deploy: copy to `/config/pyscript/`
 + `pyscript.reload`. Flow per call:
-1. Switch TV source (`launch_app` HDMI pseudo‑apps / `select_source` app titles — see `PROFILES`).
+1. Switch TV source (`launch_app` HDMI pseudo‑apps / `select_source` app titles — see `PROFILES`). **Retried** (`SOURCE_SWITCH_RETRIES` 4 × `SOURCE_SWITCH_RETRY_DELAY` 2 s) and **guarded**: on a cold boot the webOS websocket can still be (re)connecting when `ensure_tv_on` returns, so the call can raise `ConnectionClosedOK` — retry through the reconnect, and never let a source‑switch failure abort the audio reconcile. (All TV‑websocket calls below — soundMode, set_sound_output, volume — are likewise guarded.)
 2. **Headphones guard** (`binary_sensor.tv_bluetooth_headphones` on): set TV volume to `input_number.av_bluetooth_headphone_volume`, leave soundbar alone, stop.
 3. Read desired eq (`input_select.av_sound_mode_<activity>`) + upmix (`input_boolean.av_ai_upmix_<activity>`).
 4. **Stamp** the drift‑watch desired state (calls `script.av_stamp_desired_audio`).
-5. **Sound mode:** TV `set_settings(sound,{soundMode})` for the 4 mapping eqs; soundbar `select_sound_mode` for Clear Voice (no TV equivalent).
-6. **AI upmix:** soundbar `switch.living_room_lg_soundbar_ai_upmix` (skipped when eq = ai_sound). Waits for soundbar reachability first; each soundbar write is guarded so a not‑ready bar can't abort the run.
-7. **Volume:** `media_player.volume_set` on the **TV** — applied **once**, the first time `external_arc` is confirmed in the settle loop (so a cold‑boot eARC handshake can't re‑apply the TV's remembered volume over ours), then **never re‑asserted** (user‑adjustable).
+4b. **PATH SELECT (`_wait_soundbar_reachable` → robust vs TV‑primary).** Wait for the
+   soundbar to be reachable (`on` + reports a `source`) — warm switch clears on the first
+   (cached) poll; cold boot **forces a fresh read (`_refresh_soundbar` → `homeassistant.update_entity`)
+   every `SOUNDBAR_REFRESH_POLL` (2 s)** until it reports in, bounded by
+   `input_number.av_cold_boot_soundbar_ceiling_seconds` (default 45 s, dashboard‑tunable).
+   The forced read is essential: the `lg_soundbar_plus` integration polls only every
+   **`scan_interval` = 30 s**, so the *physically* ready bar (up in ~2‑5 s) is invisible to
+   HA's cached state for up to 30 s — the same lag h7 sidesteps with `update_entity`. So we
+   now detect the real state in ~2‑4 s and, when the bar actually came up clean on ARC, take
+   the fast TV‑primary path with **no h7 fallback**. Then decide from the soundbar's **own `source`** (NOT the
+   TV `soundOutput` sensor, which goes stale across a cold boot — that staleness is what
+   defeated the earlier eARC gate). **If the soundbar isn't on `ARC`** (it woke on Bluetooth
+   in its stale mode, or never came up) → **`needs_robust`: hand the initial set to
+   `_call_h7`** — `script.h7_soundbar_preset_native(source=arc, eq, upmix, volume, tv_was_cold=True)`,
+   which forces the input to ARC and sets everything with network verify→retry→**IR fallback**
+   + a cold settle recheck (IR works whenever the bar has power, unlike the TV/eARC channel).
+   h7 failure → `av_cold_boot_<activity>` notification. **If it's already on `ARC`** → the
+   engine's own TV‑primary writes (steps 5–6) own it.
+5. **Sound mode:** TV `set_settings(sound,{soundMode})` for the 4 mapping eqs; soundbar `select_sound_mode` for Clear Voice (no TV equivalent). Runs on **both** paths — on the robust path it reinforces (durably, TV‑root) the eq h7 just set.
+6. **AI upmix + Clear Voice — TV‑primary path only** (`if not needs_robust`; on the robust path h7 already set eq+upmix on the soundbar with its own verify/retry/IR). Upmix via soundbar `switch.living_room_lg_soundbar_ai_upmix` (skipped when eq = ai_sound). **AI Sound Pro takes the switch entity `unavailable`, not just locked**, so on a switch *away* from ai_sound `_set_upmix` first **waits for the switch to come back available** (`input_number.av_upmix_unlock_timeout_seconds`, default 8 s, dashboard‑tunable), then **writes → verifies → retries** (`UPMIX_VERIFY_RETRIES` 3); notify‑only if it never un‑locks.
+7. **Volume:** `media_player.volume_set` on the **TV** — applied **once**, the first time `external_arc` is confirmed in the settle loop, then **never re‑asserted** (user‑adjustable). On the robust path h7 already set the soundbar volume; this applies the eARC‑authoritative TV volume to the same target, so they converge.
 8. Hold `soundOutput = external_arc` through the settle window (`input_number.av_settle_window_seconds`, debounce `WRONG_CONFIRM_POLLS=2`); notify‑only if it never settles.
 
-Does **not** do power. Does **not** call h7.
+Does **not** do power. **Calls h7 only on the cold/bad‑state (`needs_robust`) path** — the IR
+branch remains h7's primary caller.
 
 ### 2c. Stamp script — `script.av_stamp_desired_audio` (mode parallel)
 Fields `sound_mode_label`, `upmix`. Writes `input_text.av_desired_sound_mode_label`,
@@ -79,10 +107,15 @@ Standard/AI Sound Pro/Bass/Custom (durable, TV‑root), **soundbar
 `select_sound_mode`** for Clear Voice. Re‑asserts AI upmix (unless AI Sound Pro).
 **Leaves volume alone.** Works in both modes (keyed off the stamp timestamp).
 
-### 2e. Soundbar preset — `script.h7_soundbar_preset_native`  (**IR‑mode primary only**)
+### 2e. Soundbar preset — `script.h7_soundbar_preset_native`  (**IR‑mode primary + network cold‑boot recovery**)
 The proven write→verify→retry→IR‑fallback soundbar primitive. Fields
-source/eq/upmix/volume/tv_was_cold. Still called by the **default/IR** branch of
-every activity. **2026‑08‑28:** volume was removed from its verify/retry +
+source/eq/upmix/volume/tv_was_cold. Called by the **default/IR** branch of every
+activity, **and (2026‑08‑29) by the network engine on its `needs_robust` path**
+(cold/bad‑state boot where the soundbar isn't on ARC) — see §2b step 4b. Its
+`source=arc` forcing + IR fallback are exactly what the pure TV/eARC engine path
+lacked: on a cold boot the soundbar can wake on Bluetooth in its stale mode, and IR
+drives it regardless of the eARC handshake. Bails up front if `media_player.lg_soundbar`
+is `unavailable` (integration down); `tv_was_cold=True` enables its settle‑recheck. **2026‑08‑28:** volume was removed from its verify/retry +
 settle‑recheck (it sets volume once, never re‑asserts) so manual volume changes
 after a switch stick; source/eq/upmix verify + IR fallback (Soundsuite device 16)
 unchanged.
@@ -99,6 +132,23 @@ VRROOM port 0 + Kodi wake), batocera (HDMI3 direct + WOL switch.batocera), ps5
 VRROOM port 1), shield (HDMI4 via VRROOM port 2 + Ugreen IR dev13 cmd5), switch
 (VRROOM 2 + Ugreen dev13 cmd4), ugoos (VRROOM 2 + Ugreen dev13 cmd1).
 
+### 2g. Manual reset — `script.av_reset_audio` (button on `/av-network`)
+Re‑asserts the **current activity's** source‑specific audio standards after the user
+has fiddled with volume / modes / Bluetooth — **audio only, no source/app switch.**
+It is a **thin wrapper**: resolve activity (optional `activity` field, else
+`input_text.av_last_activity`; notify + stop if neither) → call
+**`pyscript.av_tv_reconcile(activity, reset=True)`** — the engine's reset mode (§2b):
+skips the source switch, forces `soundOutput = external_arc` up front (undoes Bluetooth /
+TV‑speaker, wakes an auto‑off soundbar), **always takes the soundbar‑direct h7 path**
+(eq/upmix/volume with network verify→retry→IR fallback, TV‑websocket‑independent), then
+TV‑root soundMode + eARC volume as guarded best‑effort. `mode: restart`; **silent on
+success** — notification only on no‑activity. **Why delegate to the engine:** a plain HA
+script's `continue_on_error` does **not** catch the raw `websockets…ConnectionClosedOK`
+the flaky TV socket throws (observed 2026‑09‑04 — it aborted the script on the TV‑root
+step), whereas the engine's Python `try/except` guards do. **Depends on `av_last_activity`**
+for the button path (engine‑populated) and on the engine carrying the `reset` param
+(redeploy required).
+
 ---
 
 ## 3. Per‑activity helpers (drive both branches) & dashboard
@@ -111,11 +161,30 @@ VRROOM port 1), shield (HDMI4 via VRROOM port 2 + Ugreen IR dev13 cmd5), switch
 | `input_boolean.av_network_<a>` | per‑activity network allowlist |
 
 Globals: `av_network_mode_master`, `av_settle_window_seconds` (12),
+`av_upmix_unlock_timeout_seconds` (8), `av_cold_boot_soundbar_ceiling_seconds` (45),
 `av_bluetooth_headphone_volume` (50), `av_drift_watch_window` (45),
 `binary_sensor.tv_bluetooth_headphones`, `input_number.h7_soundbar_ready_ceiling`
-(soundbar reachability wait, reused by the engine). All `av_*` helpers carry the
-**`av_network`** label. **Dashboard:** `/av-network` (global controls + live TV
-audio status + per‑activity cards + Batocera spatial‑audio card).
+(soundbar reachability wait, reused by the engine). **Dashboard:** `/av-network`
+(global controls + live TV audio status + per‑activity cards + Batocera
+spatial‑audio card).
+
+**Helper taxonomy (labels + helpers‑scope categories):** every helper carries a
+`av_network` and/or `ir_network` **label** and exactly one **category**, split by
+which audio path reads it:
+- **Network‑only** — label `av_network`, category *AV Network* (15): the master +
+  per‑activity `av_network_<a>` toggles, `av_settle_window_seconds`,
+  `av_upmix_unlock_timeout_seconds`, `av_cold_boot_soundbar_ceiling_seconds`,
+  `av_bluetooth_headphone_volume`. (engine‑only)
+- **Both paths** — labels `av_network`+`ir_network`, category *AV Shared* (35): the
+  per‑activity `av_volume`/`av_sound_mode`/`av_ai_upmix` trios, `av_drift_watch_window`,
+  `h7_soundbar_ready_ceiling`, and the drift stamp trio (`av_desired_sound_mode_label`,
+  `av_desired_upmix_state`, `av_audio_preset_at`).
+- **IR‑only** — label `ir_network`, category *IR Network* (4): `h7_switch_delay_cold_boot`,
+  `h7_switch_delay_warm_switch`, `h7_delay_audio_after_source_switch`, `lg_tv_use_ir`.
+
+Labels overlap (shared helpers carry both) so filtering `label:av_network` = network+shared
+and `label:ir_network` = IR+shared; the three categories are exclusive buckets in the
+Helpers UI.
 
 Seeded volumes: NLZiet 15, YouTube 15, Kodi 20, Batocera 10, PS5 15, Blu‑Ray 20,
 Xbox 15, Shield 15, Switch 10, Ugoos 15. Sound modes: Batocera `ai_sound`, rest
@@ -169,17 +238,93 @@ control on Bluetooth, so no mode handling there.
 ## 7. Constraints & watch‑points
 - WOL from HA doesn't reach the TV here → power = IR/Sofabaton
   (`script.ensure_tv_on` = IR primary + official webostv network turn‑on fallback).
-- **Open after the 2026‑08‑28 refactor:** AI‑upmix reliability on a fully cold
-  boot (soundbar readiness), and cold‑boot volume holding after the eARC
-  handshake. NLZiet+Batocera validated live; the other 8 rolled out but not yet
-  individually cold‑tested.
+- **Cold‑boot soundbar readiness — v2 fix deployed 2026‑08‑29, awaiting a real cold
+  test.** Two cold boots failed: (1) power‑off→NLZiet, soundbar came up 32 s late in
+  AI Sound Pro; (2) power‑off→Kodi, soundbar came up on **Bluetooth** and the TV
+  `soundOutput` sensor was **stale `external_arc`**, which defeated the first (eARC‑gate)
+  fix — it cleared instantly on the stale value. Deeper cause: the pure TV/eARC engine
+  path (a) never forced the soundbar onto **ARC** (the old h7 did, via `source=arc`) and
+  (b) dropped the **IR fallback**, so it can't drive a soundbar that woke on Bluetooth.
+  **v2 (§2b step 4b):** the engine now keys off the soundbar's **own `source`** and, when
+  it isn't on ARC, hands the initial set to `h7_soundbar_preset_native` (forces ARC +
+  IR fallback + cold settle recheck). **Cold boots can't be forced on demand** (HA power
+  sensors read "offline" long before the bar is truly cold — only hours off reproduces
+  it), so validate after each real failure: check logs for `robust h7 path` vs
+  `TV‑primary path`, h7's own mismatch notifications, and `av_cold_boot_<activity>`; raise
+  `av_cold_boot_soundbar_ceiling_seconds` if the soundbar needs longer to report in.
+- **Cold‑boot source switch crash — fixed 2026‑09‑04.** A cold boot → Batocera did nothing
+  (no source, no volume, no mode): the webOS websocket was still (re)connecting when the engine
+  fired `launch_app`, which raised `websockets…ConnectionClosedOK`. `_switch_source` was
+  unguarded, so it aborted the whole run at step 1. Now source switch retries (4 × 2 s) through
+  the reconnect and every TV‑websocket call is guarded — a transient drop is logged and skipped,
+  never fatal (§2b step 1). The audio reconcile (soundbar‑direct via h7) doesn't depend on the
+  TV websocket anyway, so it now proceeds even if the TV side is briefly flaky.
+- **The "30 s cold‑boot delay" is a reporting artifact, not the device (root cause found
+  2026‑08‑30).** `lg_soundbar_plus` has **`scan_interval` = 30 s** — the bar is physically up
+  in ~2‑5 s but HA's cached state lags up to a full poll. v2.1: `_wait_soundbar_reachable`
+  now **forces `homeassistant.update_entity` every 2 s** on a cold boot (h7's trick) so the
+  engine sees the real state in ~2‑4 s → correct‑on‑ARC boots take the fast TV‑primary path
+  and skip h7 entirely. Alternative lever not taken: lowering `scan_interval` (helps the
+  drift‑watch's own 30 s lag too, at ~3× poll traffic). The TV side polls every 5 s
+  (`lg_webos_bsc poll_interval=5`).
+- **Watch:** the TV `…audio_settings.soundOutput` sensor was observed **stale** across
+  the 21:30 cold boot (held `external_arc` while the TV was off). The engine no longer
+  trusts it for path selection, but the settle loop (§2b step 8) still keys off it — if
+  staleness recurs, that hold/volume‑gate logic may need the same soundbar‑source basis.
+- **Resolved 2026‑08‑29:** switching *from* ai_sound (AI Sound Pro) to an upmix
+  source left upmix stuck at its pre‑ai_sound value — AI Sound Pro takes the
+  upmix switch entity `unavailable`, and the engine wrote it before the soundbar
+  finished leaving that eq, so the write was dropped. Engine now waits for the
+  switch to come back available, then writes+verifies+retries (§2b step 6).
+  Validated live: Batocera(AI Sound Pro) → NLZiet, upmix went unavailable → on.
 - Once cold boots show no residual drift, turn `av_drift_watch_window` down.
 
 ---
 
-## 8. Validation status (2026‑08‑28)
-Network‑mode TV‑primary refactor: engine deployed & reloaded (service confirmed);
-**NLZiet + Batocera validated live** (source/mode/upmix/volume correct, manual
-volume sticks); other 8 activities rolled out via structure‑targeted transform,
-shield spot‑checked (VRROOM+engine+Ugreen preserved, soundbar step removed, IR
-branch intact) — pending individual live tests.
+## 8. Validation status (2026‑09‑04)
+Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
+upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
+Fixes since, newest first:
+- **2026‑09‑04 — manual Reset button** (`script.av_reset_audio`, §2g): delegates to the
+  engine's `reset` mode (Python‑guarded, always soundbar‑direct h7). **Validated live:**
+  ran `execution=finished`, held the Batocera standard (AI Sound Pro / vol 10 / ARC / eARC),
+  no error even while the TV websocket was flapping.
+- **2026‑09‑04 — cold‑boot source‑switch crash** (`ConnectionClosedOK` aborting the run):
+  source switch retries 4×2 s + all TV‑websocket calls guarded (§2b step 1). Deployed;
+  reset‑path exercised live, cold‑boot path awaiting a real cold boot.
+- **2026‑08‑30 — cold‑boot detection speed** (v2.1): `_wait_soundbar_reachable` forces a
+  fresh read every 2 s past the 30 s `scan_interval`. Deployed; awaiting a real cold boot.
+- **2026‑08‑29 — cold‑boot soundbar readiness** (v2): source‑based path select + h7 recovery
+  (forces ARC + IR). Deployed; awaiting a real cold boot to confirm.
+- **2026‑08‑29 — upmix unlock** (AI Sound Pro → upmix source): validated live.
+- **2026‑08‑29 — helper taxonomy** (av_network/ir_network labels + AV Network/Shared/IR
+  categories across all 53 helpers): applied.
+
+Open: (a) individual cold‑boot confirmations for the remaining activities — can only be
+checked after each real failure (cold boots aren't forceable, §7); (b) **TV webOS websocket
+flapping** — an issue in *our own* `lg_webos_bsc` integration (§2a/§9), currently only
+worked around in the engine; the integration itself is being hardened (§9).
+
+---
+
+## 9. `lg_webos_bsc` vs the official `webostv` (connection handling)
+We own `lg_webos_bsc` (§2a), so the websocket flapping is ours to fix at the source, not
+just work around. Compared against HA core's `webostv`
+(github.com/home-assistant/core → `homeassistant/components/webostv`) + the `aiowebostv`
+library:
+
+| Aspect | Official `webostv` | `lg_webos_bsc` |
+|---|---|---|
+| State | push callback **+** 10 s poll safety net | push subset **+** 5 s poll (auto‑downgrades to pure poll if a subscription hangs connect) |
+| Reconnect | poll cycle: `if is_connected(): return` else `connect()` | same (`async_ensure_connected` each poll) |
+| Command guard | `@cmd` decorator catches `WEBOSTV_EXCEPTIONS` → clean `HomeAssistantError`; refuses if TV off | **adopted 2026‑09‑04:** `async_command` reconnect + retry‑once on `ConnectionClosed`/timeout → clean `HomeAssistantError` |
+| Availability | `async_set_updated_data(None)` only after a successful connect | off/unreachable → `power=off`, entities stay available |
+
+**Adopted:** the command‑level connection guard — the missing piece that let a raw
+`ConnectionClosedOK` crash callers (our retry‑once is actually a bit stronger than the
+official decorator, which only surfaces the error). **Deliberately different:** we poll a
+minimal set and cache the slow bits, because this webOS 26 firmware silently drops some
+subscriptions and 500s/401s some getters — the official model assumes a better‑behaved
+stack. **Could still adopt if flapping persists:** route the few direct‑client methods
+(`async_remote_button`, `async_send_message`, `async_set_game_genre`) through the same
+guard, and consider `aiowebostv`'s newer client if bscpylgtv's reconnect proves weaker.
