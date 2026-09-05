@@ -72,10 +72,14 @@ The **sole network‑mode audio controller**. Deploy: copy to `/config/pyscript/
    (cached) poll; cold boot **forces a fresh read (`_refresh_soundbar` → `homeassistant.update_entity`)
    every `SOUNDBAR_REFRESH_POLL` (2 s)** until it reports in, bounded by
    `input_number.av_cold_boot_soundbar_ceiling_seconds` (default 45 s, dashboard‑tunable).
-   The forced read is essential: the `lg_soundbar_plus` integration polls only every
-   **`scan_interval` = 30 s**, so the *physically* ready bar (up in ~2‑5 s) is invisible to
-   HA's cached state for up to 30 s — the same lag h7 sidesteps with `update_entity`. So we
-   now detect the real state in ~2‑4 s and, when the bar actually came up clean on ARC, take
+   The forced read helps ONLY since `lg_soundbar_plus` 0.1.9: the real cold‑boot detection
+   lag was **the soundbar client's reconnect backoff** (was capped at 30 s), not the 30 s
+   `scan_interval` as first assumed. When the bar is off the backoff climbs to its cap, so the
+   client sat in a `sleep` and wouldn't reconnect until it expired — and `update_entity` did
+   **nothing**, because it calls `request_all()` on a dead socket (which just fails); only the
+   sleeping background thread reconnects. 0.1.9 caps the backoff at 5 s and makes a forced
+   refresh `poke()` an immediate reconnect, so `update_entity` finally drives detection. With
+   that, the bar is seen within ~a connect RTT of powering on, and when it came up clean on ARC, take
    the fast TV‑primary path with **no h7 fallback**. Then decide from the soundbar's **own `source`** (NOT the
    TV `soundOutput` sensor, which goes stale across a cold boot — that staleness is what
    defeated the earlier eARC gate). **If the soundbar isn't on `ARC`** (it woke on Bluetooth
@@ -259,14 +263,21 @@ control on Bluetooth, so no mode handling there.
   the reconnect and every TV‑websocket call is guarded — a transient drop is logged and skipped,
   never fatal (§2b step 1). The audio reconcile (soundbar‑direct via h7) doesn't depend on the
   TV websocket anyway, so it now proceeds even if the TV side is briefly flaky.
-- **The "30 s cold‑boot delay" is a reporting artifact, not the device (root cause found
-  2026‑08‑30).** `lg_soundbar_plus` has **`scan_interval` = 30 s** — the bar is physically up
-  in ~2‑5 s but HA's cached state lags up to a full poll. v2.1: `_wait_soundbar_reachable`
-  now **forces `homeassistant.update_entity` every 2 s** on a cold boot (h7's trick) so the
-  engine sees the real state in ~2‑4 s → correct‑on‑ARC boots take the fast TV‑primary path
-  and skip h7 entirely. Alternative lever not taken: lowering `scan_interval` (helps the
-  drift‑watch's own 30 s lag too, at ~3× poll traffic). The TV side polls every 5 s
-  (`lg_webos_bsc poll_interval=5`).
+- **The "30 s cold‑boot delay" is a reporting artifact, not the device — but the FIRST
+  root cause was wrong (corrected 2026‑09‑05).** The bar is physically up in ~2‑5 s while HA
+  reported it operative ~30 s late, confirmed by the user ("soundbar starts instantly with the
+  TV, shown in HA much later"). Originally blamed on `scan_interval` = 30 s + fixed by forcing
+  `update_entity` every 2 s — but that forced read never actually worked: it calls the
+  soundbar client's `request_all()` on a **dead socket**, which just fails. The true cause was
+  `lg_soundbar_plus`'s **reconnect backoff, capped at 30 s** (`protocol.py`): with the bar off
+  the backoff reaches its cap, so the background thread sits in `sleep(30)` and won't attempt a
+  reconnect until it expires — nothing HA does from the coordinator side can shortcut it. This
+  is what made a 2026‑09‑05 Batocera cold boot wait its full 45 s soundbar ceiling. **Fix
+  (`lg_soundbar_plus` 0.1.9):** backoff cap 30 s → 5 s, an interruptible‑sleep `poke()`, and
+  the coordinator pokes a reconnect on a disconnected forced refresh — so `update_entity`
+  finally drives detection and a returning bar is seen in ~a connect RTT. This is the exact
+  same class of bug as the TV integration's, in our other integration. The TV side polls every
+  5 s (`lg_webos_bsc poll_interval=5`); the soundbar stays push‑driven once connected.
 - **Watch:** the TV `…audio_settings.soundOutput` sensor was observed **stale** across
   the 21:30 cold boot (held `external_arc` while the TV was off). The engine no longer
   trusts it for path selection, but the settle loop (§2b step 8) still keys off it — if
