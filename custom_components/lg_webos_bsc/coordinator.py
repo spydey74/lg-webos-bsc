@@ -190,9 +190,19 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.mac = mac
         self._client: WebOsClient | None = None
         self._connect_lock = asyncio.Lock()
-        # Start in push (hybrid) mode; downgrade to pure polling if a subscription
-        # ever hangs connect().
-        self._push_mode = True
+        # PURE POLLING mode (0.1.7). Push mode is DISABLED because every reconnect/
+        # teardown hang we chased (2026-09-04..06, six failures) lived in the push
+        # subscription machinery: the state-update callback (`_on_push`) firing
+        # `async_set_updated_data` concurrently with a `disconnect()` that must cancel
+        # bscpylgtv's callback_handler async-generator, plus connect() awaiting
+        # subscription setup with no timeout. Removing subscriptions makes connect()
+        # simpler (no subscribe step to hang) and teardown quieter (no push callbacks
+        # racing the disconnect). Cost: TV state in HA refreshes on the ~5s poll instead
+        # of <1s -- irrelevant here, the AV engine drives everything and nothing depends
+        # on sub-second TV updates. The old push path + its auto-downgrade remain in the
+        # code but are never entered from here. (If pure-poll still proves unreliable, the
+        # next step is migrating the client off bscpylgtv onto aiowebostv -- Path C.)
+        self._push_mode = False
         # We cannot reliably read some settings back (getSystemSettings 500s on
         # this firmware), so track the last value we set for optimistic state.
         self.last_game_genre: str | None = None

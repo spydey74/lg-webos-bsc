@@ -296,6 +296,20 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑06 (later) — STRATEGY CHANGE: push mode DISABLED, pure polling only (0.1.7).**
+  0.1.6's canary correctly dropped the socket on a clean close — and exposed **failure mode #4**:
+  after the drop, the poll loop, `disconnect()`, AND `reload_config_entry` all **hung**, and the
+  watchdog got stuck `running` (reload never returned; "Already running" ×19). Every one of the six
+  failures (2026‑09‑04..06) lived in the **push subscription machinery** — `_on_push` firing
+  `async_set_updated_data` concurrently with a `disconnect()` that must cancel bscpylgtv's
+  `callback_handler` async‑generator, plus connect() awaiting subscription setup with no timeout.
+  Rather than patch mode #5, we stopped: **`_push_mode = False`** at coordinator init. Pure polling
+  removes subscriptions entirely (simpler connect, quieter teardown); TV state refreshes on the ~5s
+  poll instead of <1s, which is irrelevant since the AV engine drives everything. User decision
+  (2026‑09‑06): try pure‑poll (A); if it still fails, migrate the client off bscpylgtv onto
+  aiowebostv (Path C) — the Game Optimizer / alert‑bridge writes are nice‑to‑have, not worth the
+  cost of unreliable source switching. Watchdog also set to `mode: restart` so a hung reload can no
+  longer wedge it. PENDING deploy + cold‑boot verify.
 - **2026‑09‑06 — canary now drops on a CLEAN CLOSE, not just a hang (0.1.6): the real recurring wedge.**
   Captured at last (debug was armed, no restart wiped it). Failure mode #3, distinct from the
   earlier two: the TV powered off overnight (~03:46), the control socket closed cleanly
