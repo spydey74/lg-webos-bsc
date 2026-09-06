@@ -465,14 +465,36 @@ def av_tv_reconcile(activity=None, reset=False):
         if needs_soundbar:
             _wait_soundbar_ready(_num(SOUNDBAR_READY_HELPER, SOUNDBAR_READY_DEFAULT))
 
-        if eq in EQ_SOUNDBAR_ONLY and eq_label:
-            try:
-                service.call("media_player", "select_sound_mode", entity_id=SOUNDBAR,
-                             sound_mode=eq_label, blocking=True)
-                log.info("av_reconcile[%s]: set soundbar sound_mode=%s (no TV equiv)",
-                         activity, eq_label)
-            except Exception as err:
-                log.warning("av_reconcile[%s]: soundbar sound_mode set failed: %s", activity, err)
+        # Soundbar-direct eq write for every NON-ai_sound eq. Clear Voice has no TV
+        # equivalent so it must be set here. The mapping eqs (standard/bass/custom) are
+        # normally driven by the TV-root soundMode asserted above -- BUT on a cold boot
+        # that assertion sometimes does not dislodge the soundbar from the previous
+        # activity's mode (observed 2026-09-06: NLZiet cold start after Batocera left the
+        # bar in AI Sound Pro; TV soundMode=standard did not take, so the upmix switch
+        # stayed locked-'unavailable' and upmix could not be set either -- audio wrong
+        # until a manual fix). So verify the soundbar actually reached the target and, if
+        # not, force it directly. This both fixes the eq and unlocks the upmix switch for
+        # _set_upmix below. Fresh-read first so we don't act on a pre-assertion value.
+        # (ai_sound is driven by TV-root only and skips this -- its upmix switch is
+        # unavailable BY DESIGN, so a soundbar-direct write / readback here is moot.)
+        if eq != "ai_sound" and eq_label:
+            _refresh_soundbar()
+            task.sleep(1.0)
+            cur_mode = (state.getattr(SOUNDBAR) or {}).get("sound_mode")
+            if cur_mode != eq_label:
+                try:
+                    service.call("media_player", "select_sound_mode", entity_id=SOUNDBAR,
+                                 sound_mode=eq_label, blocking=True)
+                    log.info("av_reconcile[%s]: soundbar sound_mode was %s, forced -> %s "
+                             "(TV-root soundMode did not take / no TV equiv)",
+                             activity, cur_mode, eq_label)
+                    # Push the switch-availability update so _set_upmix sees the unlock
+                    # promptly rather than waiting out the integration's scan_interval.
+                    _refresh_soundbar()
+                except Exception as err:
+                    log.warning("av_reconcile[%s]: soundbar sound_mode set failed: %s", activity, err)
+            else:
+                log.info("av_reconcile[%s]: soundbar sound_mode=%s confirmed", activity, eq_label)
 
         # AI upmix is unavailable while eq is AI Sound Pro (the mode disables it and
         # the switch entity reports 'unavailable'). When switching AWAY from AI Sound

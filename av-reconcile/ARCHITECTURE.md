@@ -296,6 +296,19 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑06 (later³) — cold‑boot: TV‑primary path now has a soundbar‑direct eq fallback.**
+  NLZiet cold start (21:04) after Batocera left the soundbar in **AI Sound Pro**. The engine took
+  the TV‑primary path and asserted `TV soundMode=standard`, but on this cold boot the soundbar
+  **didn't follow** — and because it stayed in AI Sound Pro, the AI‑upmix switch stayed
+  locked‑`unavailable`, so `_set_upmix` also gave up ("upmix switch still unavailable after 8s").
+  End state: stuck in AI Sound Pro, fixed manually. Root gap: for the mapping eqs
+  (standard/bass/custom) the TV‑primary path **trusted the TV‑root soundMode write with no
+  soundbar‑direct fallback** if it didn't take. Fix (`av_reconcile.py` §6): for every **non‑ai_sound**
+  eq, fresh‑read the soundbar and, if its `sound_mode` isn't the target, **force it directly**
+  (`media_player.select_sound_mode`) — which also unlocks the upmix switch for `_set_upmix`. Clear
+  Voice keeps its (now verify‑gated) direct write; `ai_sound` is unaffected (TV‑root only). *NOT
+  caused by the two fixes below — that run was TV‑primary (no h7) and the engine file wasn't even
+  deployed yet; this is a pre‑existing cold‑boot gap.* PENDING deploy of the pyscript file.
 - **2026‑09‑06 (later²) — two `AV Reset Audio` bugs fixed.**
   *(1) Volume "reset after ~8 s".* In reset mode the engine always takes the robust **h7** path,
   which sets the soundbar volume early and then **blocks** for h7's 6 s cold‑settle recheck
