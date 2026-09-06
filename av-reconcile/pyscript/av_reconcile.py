@@ -487,9 +487,18 @@ def av_tv_reconcile(activity=None, reset=False):
     #    so the TV can't re-apply its remembered eARC volume over ours. Set ONCE
     #    on the TV (which drives the soundbar), then it's the user's -- nothing
     #    re-asserts it (the TV integration still reports it live). On the robust path
-    #    h7 already set the soundbar volume; this still applies the eARC-authoritative
-    #    TV volume once external_arc is confirmed (same target, so they converge).
-    vol_applied = False
+    #    h7 already set the soundbar volume; on a cold-boot activity switch we STILL
+    #    apply the eARC-authoritative TV volume once external_arc is confirmed, to beat
+    #    the TV's remembered eARC volume as the handshake completes.
+    #
+    #    EXCEPTION -- reset mode: h7 has already set the volume, and reset is a warm,
+    #    user-watching action. The old second write here landed ~6-8 s later (right
+    #    after h7's blocking cold-settle recheck returns) and STOMPED any volume the
+    #    user nudged in that window -- exactly the "reset again after 8 s" report. In
+    #    reset mode h7's early write is the single "set once, then it's the user's"
+    #    application, so suppress the engine's late re-apply. (A cold-boot activity
+    #    switch is reset=False, so it keeps the belt-and-suspenders write.)
+    vol_applied = reset
 
     # 8) Assert + hold the desired sound output for the settle window.
     try:

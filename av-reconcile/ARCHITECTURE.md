@@ -296,6 +296,25 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑06 (later²) — two `AV Reset Audio` bugs fixed.**
+  *(1) Volume "reset after ~8 s".* In reset mode the engine always takes the robust **h7** path,
+  which sets the soundbar volume early and then **blocks** for h7's 6 s cold‑settle recheck
+  (`tv_was_cold=True`). The instant h7 returned, the engine's own settle loop re‑applied the TV
+  volume a **second** time — stomping any volume the user nudged during that window (the reported
+  "changed the volume in those 8 s → reset again"). Fix (`av_reconcile.py`): `vol_applied = reset`
+  — in reset mode h7's early write is the single "set once, then it's the user's" application; the
+  engine no longer re‑applies volume. A cold‑boot **activity switch** is `reset=False`, so it keeps
+  its belt‑and‑suspenders eARC volume write (which beats the TV's remembered eARC volume as the
+  handshake completes). PENDING deploy of the pyscript file.
+  *(2) False "verified mismatch" with all‑None actuals → blind IR recovery.* `script.h7_soundbar_preset_native`'s
+  verify templates read `state_attr(...) != <label>`; when the soundbar was momentarily **unreadable**
+  (socket dropped by the reset's forced eARC re‑handshake) every attr was `None`, so `None != 'ARC'`
+  registered as a *mismatch*, "corrected", re‑read `None`, then fired a blind Soundsuite‑20 **IR
+  recovery** + alarm against a bar it simply couldn't read. Fix (live, HA storage): every verify
+  fragment now guards on readability — `... is not none and ...` for source/sound_mode,
+  `states(...) in ['on','off'] and ...` for upmix — across all four blocks (write‑time, retry,
+  settle, settle‑retry). Can't‑read ⇒ no mismatch ⇒ no correction / IR / alarm. (This script lives
+  only in HA storage, not the repo — recorded here as the source of truth.)
 - **2026‑09‑06 (later) — STRATEGY CHANGE: push mode DISABLED, pure polling only (0.1.7).**
   0.1.6's canary correctly dropped the socket on a clean close — and exposed **failure mode #4**:
   after the drop, the poll loop, `disconnect()`, AND `reload_config_entry` all **hung**, and the
