@@ -349,18 +349,29 @@ class LgWebosBscCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["muted"] = await self._safe_call(client.get_muted)
             data["sound_output"] = await self._safe_call(client.get_sound_output)
 
-        # Liveness canary (see _POLL_CALL_TIMEOUT). A *timed-out* power read means the
-        # socket is wedged half-open (no keepalive/recv-timeout in bscpylgtv) -> drop it
-        # so the next poll rebuilds, rather than leaving is_connected() lying True and
-        # letting commands hang into it. Other (non-timeout) failures are tolerated.
+        # Liveness canary. The power read is the poll's proof the socket is actually
+        # alive; if it fails with ANY connection error -- a half-open hang (TimeoutError)
+        # OR a clean/abrupt close (ConnectionClosed: 'sent 1000 (OK); then received 1000
+        # (OK)', seen when the TV powers off) -- the socket is dead and MUST be dropped so
+        # the next poll rebuilds it. bscpylgtv's is_connected() keeps lying True after such
+        # a close, so if we merely tolerate the error the poll returns success with STALE
+        # cached data forever and never reconnects (observed 2026-09-06: TV powered off
+        # ~03:46, every read ConnectionClosedOK, coordinator "succeeded" for 11h on frozen
+        # data, so the next cold-boot Activity hit a dead socket -- and the last_reported
+        # watchdog couldn't see it because a "successful" poll keeps last_reported fresh).
+        # Only genuinely transient, NON-connection read errors (e.g. a one-off 500) are
+        # tolerated below.
         try:
             power = await asyncio.wait_for(client.get_power_state(), _POLL_CALL_TIMEOUT)
             data["power"] = self._interpret_power(power)
-        except asyncio.TimeoutError:
-            _LOGGER.debug("power read on %s timed out; dropping wedged socket", self.host)
+        except _CONNECTION_ERRORS as exc:
+            _LOGGER.debug(
+                "power canary on %s failed (%s); dropping the dead socket so the next "
+                "poll rebuilds", self.host, exc,
+            )
             await self.async_shutdown_client()
             return self._offline_data()
-        except Exception as exc:  # noqa: BLE001 -- tolerate transient read failures
+        except Exception as exc:  # noqa: BLE001 -- tolerate transient non-connection errors
             _LOGGER.debug("power read on %s failed: %s", self.host, exc)
             data["power"] = self._interpret_power(None)
 

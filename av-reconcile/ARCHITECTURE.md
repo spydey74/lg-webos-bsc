@@ -296,6 +296,23 @@ control on Bluetooth, so no mode handling there.
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑09‑06 — canary now drops on a CLEAN CLOSE, not just a hang (0.1.6): the real recurring wedge.**
+  Captured at last (debug was armed, no restart wiped it). Failure mode #3, distinct from the
+  earlier two: the TV powered off overnight (~03:46), the control socket closed cleanly
+  (`ConnectionClosedOK` — "sent 1000 (OK); then received 1000 (OK)"), and bscpylgtv's
+  `is_connected()` kept lying **True**. The poll's liveness canary only dropped the socket on
+  `asyncio.TimeoutError`, so the *clean close* fell through the generic `except Exception`, was
+  tolerated, and the poll returned **`success: True` with stale cached data every 5 s for 11 h** —
+  never reconnecting. The next cold‑boot Activity (Batocera 15:01) hit that dead socket and wedged.
+  **The `av_tv_integration_watchdog` was blind to it**: a "successful" poll keeps `last_reported`
+  fresh (only `last_updated`/`last_changed` froze), and the watchdog keys on `last_reported`
+  staleness — so it fired every minute but always `failed_conditions`. Fix: the canary now drops +
+  reports offline on the whole `_CONNECTION_ERRORS` family (adds `ConnectionClosed`/`ConnectionError`/
+  `OSError` to the existing `TimeoutError`), so a closed socket is rebuilt on the next poll and the
+  integration self‑heals — no watchdog needed for this mode. **Watchdog caveat recorded:** it can only
+  catch the *frozen‑loop* mode (last_reported freezes), NOT a poll that "succeeds" on a dead socket;
+  no entity timestamp cleanly distinguishes that from an idle‑but‑healthy TV, so the cure has to live
+  in the integration. Recovered the live wedge via entry reload (coordinator) + restart (wedged script).
 - **2026‑09‑04 (late) — SOURCE‑LEVEL fix: restored bscpylgtv keepalive** (`lg_webos_bsc`
   **0.1.5**, `patch.py`): the root cause of the whole 0.5.4 hang saga was that bscpylgtv
   opens both its sockets with `ping_interval=None` (keepalive OFF) and has no recv timeout,
