@@ -208,10 +208,16 @@ PROFILES = {
 
 
 def _num(entity, default):
-    """Read a numeric helper, falling back to default on unavailable/blank."""
+    """Read a numeric helper, falling back to default on unavailable/blank OR when
+    the helper entity doesn't exist. pyscript's state.get raises NameError for an
+    undefined entity (NOT None), so that must be caught too -- otherwise a missing
+    tunable helper crashes the whole reconcile run instead of degrading to the
+    default (observed 2026-09-09: av_audio_signal_wait_seconds not yet created ->
+    NameError at the Change A gate aborted the NLZiet cold-start eq write, leaving
+    the bar in the prior activity's AI Sound Pro)."""
     try:
         return float(state.get(entity))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, NameError):
         return default
 
 
@@ -403,8 +409,12 @@ def _apply_soundbar_eq(activity, eq_label, reason):
 
 def _soundbar_power_sensor_on():
     """Zigbee power-plug view of the bar: 'on' == drawing running-power (not
-    standby). Unknown/unavailable -> treat as not-confirmed-powered."""
-    return state.get(SOUNDBAR_POWER_SENSOR) == "on"
+    standby). Unknown/unavailable/missing -> treat as not-confirmed-powered
+    (NameError if the sensor entity doesn't exist -- don't let that crash the run)."""
+    try:
+        return state.get(SOUNDBAR_POWER_SENSOR) == "on"
+    except NameError:
+        return False
 
 
 def _preposition_soundbar(activity):
