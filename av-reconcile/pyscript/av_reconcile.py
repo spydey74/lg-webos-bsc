@@ -19,9 +19,20 @@ into TV startup where the soundbar trails -- so the TV owns everything it can:
                      drift afterwards (this stamp used to live in
                      h7_soundbar_preset_native, which network mode no longer calls)
 
-It does NOT do power (that stays IR/Sofabaton -- WOL doesn't work here). The
-soundbar preset script.h7_soundbar_preset_native is NOT called in network mode;
-it remains the primary audio path only for IR mode (master off).
+TV power stays IR/Sofabaton (WOL doesn't work here). The SOUNDBAR, however, is
+pre-positioned over the network at the start of a switch (Change B): assert TV
+eARC, discrete-wake the bar if the Zigbee power plug reads standby, and select
+its ARC input -- discrete commands (no toggle) so the bar can stay off the IR
+power path with no state desync, and so a cold start doesn't wait out the ~45 s
+eARC-routing ceiling. The soundbar preset script.h7_soundbar_preset_native is
+still the robust recovery primitive (called via _call_h7 when the bar isn't on
+ARC / on a reset), not the primary path in network mode.
+
+Cold-start EQ writes are gated on a real incoming audio stream (Change A): the
+bar's media_player state flips on/ARC before eARC audio flows, so an eq write in
+that NO-SIGNAL window is silently rejected. The engine waits for the soundbar's
+'audio_source' attribute (exposed by lg_soundbar_plus: PCM/DOLBY AUDIO/NO SIGNAL)
+to show a real stream, then writes, then reasserts once after the format settles.
 
 Bluetooth-headphones guard: headphones are only ever selected mid-Activity. If
 they are active the audio is left entirely to the TV -- no soundbar touch, no
@@ -90,6 +101,38 @@ SOUNDBAR_READY_DEFAULT = 8.0
 # switch (soundbar already up) clears it on the first poll.
 COLD_BOOT_CEILING_HELPER = "input_number.av_cold_boot_soundbar_ceiling_seconds"
 COLD_BOOT_CEILING_DEFAULT = 45.0
+
+# --- Change A: audio-signal gate ---------------------------------------------
+# The soundbar's media_player state flips to on/ARC the instant it wakes, BEFORE
+# eARC audio actually flows. An EQ/sound-mode write in that NO-SIGNAL window is
+# silently rejected and the bar keeps its wake default (AI Sound Pro) -- the "wrong
+# sound on fast cold wakes" bug. The lg_soundbar_plus integration now surfaces the
+# bar's reported incoming-stream type as the 'audio_source' attribute (PCM /
+# DOLBY AUDIO / NO SIGNAL); we gate the soundbar-direct eq write on a real stream.
+AUDIO_SOURCE_ATTR = "audio_source"
+# Values meaning "no real audio yet". None also covers the attribute simply not
+# being present (integration not deployed / bar hasn't pushed it) -- handled
+# specially by _wait_audio_signal so a missing attribute degrades to the old timer
+# behaviour instead of blocking forever.
+NO_SIGNAL_VALUES = ("NO SIGNAL", "no signal", "NONE", "", None)
+# How long to wait for the eARC stream to appear before writing the eq anyway.
+# The stream normally lands within a couple of seconds of external_arc coming up.
+AUDIO_SIGNAL_WAIT_HELPER = "input_number.av_audio_signal_wait_seconds"
+AUDIO_SIGNAL_WAIT_DEFAULT = 20.0
+# Reassert the eq once after audio_source has held steady this long, to survive the
+# PCM->DOLBY transition (the format flip can reset the bar's eq back to its default).
+AUDIO_STABLE_SECONDS = 3.0
+AUDIO_STABLE_WAIT = 10.0  # bound on the wait-for-stable
+
+# --- Change B: discrete network pre-position ---------------------------------
+# Zigbee power-plug threshold sensor: 'on' only when the bar is actually drawing
+# running-power (standby draws below the threshold). More reliable than the
+# temescal socket, which stays reachable in standby, so it's how we tell a real
+# deep-standby bar (needs a discrete network wake) from one that's merely between
+# reconnects. Margins tuned in Zigbee2MQTT (2026-09-09).
+SOUNDBAR_POWER_SENSOR = "binary_sensor.soundbar_power_status"
+# After a discrete turn_on, how long to wait for the plug to show running-power.
+PREPOSITION_POWER_WAIT = 10.0
 
 # AI Sound Pro locks the AI-upmix control: while the soundbar is in that eq the
 # upmix switch entity reports 'unavailable'. Switching *away* from AI Sound Pro
@@ -269,6 +312,160 @@ def _wait_soundbar_reachable(timeout):
     return _soundbar_powered() and _soundbar_source() is not None
 
 
+def _audio_source():
+    """The soundbar's reported incoming-stream type (PCM/DOLBY AUDIO/NO SIGNAL),
+    or None if the bar hasn't reported it yet (or the integration isn't exposing
+    it)."""
+    return (state.getattr(SOUNDBAR) or {}).get(AUDIO_SOURCE_ATTR)
+
+
+def _audio_attr_exposed():
+    """Whether the integration update that surfaces the audio stream is deployed --
+    determined STRUCTURALLY by attribute-key presence, not value. This matters
+    because on a real cold boot the attribute is present but None (the bar hasn't
+    pushed the stream type yet) -- exactly when the gate must engage -- so a None
+    value must NOT be read as 'not deployed'. debug_all_fields is always a non-None
+    dict, so it survives HA's None-attribute handling and is the reliable marker
+    while it exists; audio_source's own presence is the fallback once debug is
+    removed."""
+    attrs = state.getattr(SOUNDBAR) or {}
+    return ("debug_all_fields" in attrs) or (AUDIO_SOURCE_ATTR in attrs)
+
+
+def _wait_audio_signal(timeout):
+    """Change A gate: poll until the soundbar reports a real incoming stream (not
+    NO SIGNAL), forcing fresh reads so we don't wait out the 30 s scan_interval.
+
+    Returns (present, exposed):
+      * exposed  -- False if the integration update isn't deployed (the attribute
+                    isn't present at all). Returns immediately in that case so a
+                    switch takes no gate penalty; the caller falls back to its old
+                    timer behaviour. This is what makes the engine safe to ship
+                    ahead of, or alongside, the integration update.
+      * present  -- True once a real stream (PCM/Dolby/...) is seen. While exposed
+                    but still NO SIGNAL (or None) we keep waiting up to timeout."""
+    if not _audio_attr_exposed():
+        return False, False
+    waited = 0.0
+    while waited < timeout:
+        if _audio_source() not in NO_SIGNAL_VALUES:
+            return True, True
+        _refresh_soundbar()
+        task.sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+    return (_audio_source() not in NO_SIGNAL_VALUES), True
+
+
+def _wait_audio_stable(timeout, stable_seconds):
+    """Wait until audio_source has held one value for stable_seconds (bounded by
+    timeout), so a reassert lands after the PCM->DOLBY format flip rather than
+    before it. Returns True if it settled, False on timeout."""
+    last = _audio_source()
+    unchanged = 0.0
+    waited = 0.0
+    while waited < timeout:
+        task.sleep(POLL_SECONDS)
+        waited += POLL_SECONDS
+        cur = _audio_source()
+        if cur == last and cur not in NO_SIGNAL_VALUES:
+            unchanged += POLL_SECONDS
+            if unchanged >= stable_seconds:
+                return True
+        else:
+            last = cur
+            unchanged = 0.0
+    return False
+
+
+def _apply_soundbar_eq(activity, eq_label, reason):
+    """Fresh-read the soundbar eq and, if it isn't already eq_label, write it
+    directly. Shared by the initial signal-gated write and the post-stable
+    reassert. Returns True if the bar ended on (or was already on) eq_label."""
+    _refresh_soundbar()
+    task.sleep(1.0)
+    cur_mode = (state.getattr(SOUNDBAR) or {}).get("sound_mode")
+    if cur_mode == eq_label:
+        log.info("av_reconcile[%s]: soundbar sound_mode=%s confirmed (%s)",
+                 activity, eq_label, reason)
+        return True
+    try:
+        service.call("media_player", "select_sound_mode", entity_id=SOUNDBAR,
+                     sound_mode=eq_label, blocking=True)
+        log.info("av_reconcile[%s]: soundbar sound_mode was %s, forced -> %s (%s)",
+                 activity, cur_mode, eq_label, reason)
+        # Push the switch-availability update so _set_upmix sees the unlock promptly.
+        _refresh_soundbar()
+        return True
+    except Exception as err:
+        log.warning("av_reconcile[%s]: soundbar sound_mode set failed: %s", activity, err)
+        return False
+
+
+def _soundbar_power_sensor_on():
+    """Zigbee power-plug view of the bar: 'on' == drawing running-power (not
+    standby). Unknown/unavailable -> treat as not-confirmed-powered."""
+    return state.get(SOUNDBAR_POWER_SENSOR) == "on"
+
+
+def _preposition_soundbar(activity):
+    """Change B: proactively route/wake the soundbar over the network at the start
+    of a (non-reset) activity switch, instead of waiting on the TV's eARC
+    auto-routing. That auto-routing is fast only when the bar was last on ARC; when
+    it was on Wi-Fi (manual, or auto-revert after idle) the TV falls back to its
+    internal speakers and audio doesn't reach the bar until the reconcile forces
+    ARC at the ~45 s cold-boot ceiling. Discrete network control (turn_on is
+    b_powerkey=true, ARC-select is i_curr_func -- neither is a toggle) so the bar
+    can stay off the Sofabaton IR power path with no state desync. Best-effort:
+    every call is guarded; nothing here aborts the run."""
+    # 1) Assert TV eARC output up front so the TV feeds the bar (not its internal
+    #    speakers) as early as it can -- the cold latency is audio ROUTING, not bar
+    #    wake. Idempotent on a warm switch already on external_arc.
+    try:
+        service.call("lg_webos_bsc", "set_sound_output", entity_id=TV,
+                     output=DESIRED_SOUND_OUTPUT, blocking=True)
+        log.info("av_reconcile[%s]: preposition -> TV soundOutput=%s",
+                 activity, DESIRED_SOUND_OUTPUT)
+    except Exception as err:
+        log.warning("av_reconcile[%s]: preposition eARC assert failed: %s "
+                    "(TV websocket not ready?)", activity, err)
+
+    # 2) Discrete network wake, only if the power plug says the bar is in standby.
+    #    The temescal socket stays reachable in standby so media_player state can't
+    #    tell us this -- the plug can. A set during deep-standby socket churn may
+    #    not land (open question O1); Change C (last input left on ARC) is the
+    #    backstop for that case.
+    # Only wake if BOTH the plug reads standby AND the media_player isn't already
+    # reporting on -- so a merely-unavailable power sensor on a warm switch (bar
+    # clearly on) doesn't trigger a needless turn_on + 10 s wait.
+    if not _soundbar_power_sensor_on() and not _soundbar_powered():
+        try:
+            service.call("media_player", "turn_on", entity_id=SOUNDBAR, blocking=True)
+            log.info("av_reconcile[%s]: preposition -> soundbar turn_on (plug reads standby)",
+                     activity)
+        except Exception as err:
+            log.warning("av_reconcile[%s]: preposition turn_on failed: %s", activity, err)
+        waited = 0.0
+        while (waited < PREPOSITION_POWER_WAIT
+               and not (_soundbar_power_sensor_on() or _soundbar_powered())):
+            _refresh_soundbar()
+            task.sleep(SOUNDBAR_REFRESH_POLL)
+            waited += SOUNDBAR_REFRESH_POLL
+
+    # 3) Put the bar on ARC so it presents as the eARC device and the TV routes to
+    #    it. Only when it's reachable and not already on ARC; if it's still in deep
+    #    standby (unreachable) this is skipped and the downstream reachability wait +
+    #    robust h7 path recover it.
+    src = _soundbar_source()
+    if _soundbar_powered() and src not in (SOUNDBAR_ARC_SOURCE, None):
+        try:
+            service.call("media_player", "select_source", entity_id=SOUNDBAR,
+                         source=SOUNDBAR_ARC_SOURCE, blocking=True)
+            log.info("av_reconcile[%s]: preposition -> soundbar source ARC (was %s)",
+                     activity, src)
+        except Exception as err:
+            log.warning("av_reconcile[%s]: preposition ARC select failed: %s", activity, err)
+
+
 def _call_h7(activity, eq, upmix_on, vol):
     """Hand the initial soundbar set to the proven h7 primitive: forces the input to
     ARC and sets eq/upmix/volume with network verify->retry->IR fallback + a cold
@@ -393,6 +590,13 @@ def av_tv_reconcile(activity=None, reset=False):
         except Exception as err:
             log.warning("av_reconcile[%s]: reset eARC force failed: %s (TV websocket "
                         "not ready?)", activity, err)
+    else:
+        # Change B: on a normal activity switch, pre-position the soundbar over the
+        # network (assert TV eARC, discrete-wake if the plug reads standby, select
+        # ARC) so a cold start doesn't wait out the 45 s ceiling for eARC to route.
+        # Reset mode already forced eARC above and always takes the h7 path, so it
+        # doesn't need this.
+        _preposition_soundbar(activity)
 
     # 3) Resolve the desired soundbar eq + upmix + volume from the per-activity helpers.
     eq = state.get(SOUND_MODE_HELPER + activity)
@@ -478,23 +682,30 @@ def av_tv_reconcile(activity=None, reset=False):
         # (ai_sound is driven by TV-root only and skips this -- its upmix switch is
         # unavailable BY DESIGN, so a soundbar-direct write / readback here is moot.)
         if eq != "ai_sound" and eq_label:
-            _refresh_soundbar()
-            task.sleep(1.0)
-            cur_mode = (state.getattr(SOUNDBAR) or {}).get("sound_mode")
-            if cur_mode != eq_label:
-                try:
-                    service.call("media_player", "select_sound_mode", entity_id=SOUNDBAR,
-                                 sound_mode=eq_label, blocking=True)
-                    log.info("av_reconcile[%s]: soundbar sound_mode was %s, forced -> %s "
-                             "(TV-root soundMode did not take / no TV equiv)",
-                             activity, cur_mode, eq_label)
-                    # Push the switch-availability update so _set_upmix sees the unlock
-                    # promptly rather than waiting out the integration's scan_interval.
-                    _refresh_soundbar()
-                except Exception as err:
-                    log.warning("av_reconcile[%s]: soundbar sound_mode set failed: %s", activity, err)
-            else:
-                log.info("av_reconcile[%s]: soundbar sound_mode=%s confirmed", activity, eq_label)
+            # Change A: gate the eq write on a real incoming stream. On a fast
+            # cold wake the media_player is already on/ARC while audio_source is
+            # still NO SIGNAL, and a select_sound_mode then is silently rejected --
+            # the bar reverts to its wake default (AI Sound Pro) within ~180 ms and
+            # never reasserts. Wait for PCM/Dolby first, then write.
+            present, exposed = _wait_audio_signal(
+                _num(AUDIO_SIGNAL_WAIT_HELPER, AUDIO_SIGNAL_WAIT_DEFAULT))
+            if not present:
+                if exposed:
+                    log.warning("av_reconcile[%s]: audio still NO SIGNAL after wait "
+                                "-- writing eq %s anyway (may be rejected)",
+                                activity, eq_label)
+                else:
+                    log.info("av_reconcile[%s]: audio_source attribute not exposed "
+                             "(deploy the integration update for the signal gate) "
+                             "-- proceeding on timer", activity)
+            _apply_soundbar_eq(activity, eq_label,
+                               "signal-gated" if present else "no-signal fallback")
+            # Reassert once after the stream has held steady, to survive a
+            # PCM->DOLBY format flip that can reset the eq back to default. Only
+            # meaningful when audio_source is actually being reported.
+            if present and exposed:
+                if _wait_audio_stable(AUDIO_STABLE_WAIT, AUDIO_STABLE_SECONDS):
+                    _apply_soundbar_eq(activity, eq_label, "post-stable reassert")
 
         # AI upmix is unavailable while eq is AI Sound Pro (the mode disables it and
         # the switch entity reports 'unavailable'). When switching AWAY from AI Sound
