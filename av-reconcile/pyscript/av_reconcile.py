@@ -546,6 +546,14 @@ def _set_upmix(activity, upmix_on):
         # If it flipped back to unavailable, wait for it to settle before retrying.
         if cur in UNAVAILABLE_STATES:
             _wait_upmix_available(timeout)
+    # The switch can lag the 0.6 s verify poll on every attempt and still land (seen
+    # 2026-09-28: "did not reach on after 3 attempts (last=on)"). Give it one more
+    # beat and only warn if it really didn't take.
+    task.sleep(UPMIX_VERIFY_POLL)
+    if _upmix_state() == want:
+        log.info("av_reconcile[%s]: AI upmix -> %s (verified late, after %d attempts)",
+                 activity, want, UPMIX_VERIFY_RETRIES)
+        return
     log.warning("av_reconcile[%s]: AI upmix did not reach %s after %d attempts "
                 "(last=%s)", activity, want, UPMIX_VERIFY_RETRIES, _upmix_state())
 
@@ -657,6 +665,31 @@ def av_tv_reconcile(activity=None, reset=False):
     else:
         log.info("av_reconcile[%s]: soundbar already on ARC -> TV-primary path", activity)
 
+    # 4c) Change A applied to the TV-root write too (2026-09-28). On a wake where the
+    #     bar comes up in the OTHER eq (Batocera's AI Sound Pro -> NLZiet's Standard,
+    #     every evening 09-20..09-28), a TV soundMode written before eARC audio flows
+    #     lands (+2 s), then the bar reverts to its wake mode (+4-6 s) and the
+    #     drift-watch has to fix it -- an audible flip-flop + an "AV drift corrected"
+    #     notification per start. Waiting for a real stream first makes the first
+    #     write stick. Warm switches already have a stream, so this clears on the
+    #     first poll. TV-primary path only: on the robust path h7 has just set the eq
+    #     on the soundbar and the step-5 write merely reinforces it.
+    present, exposed = False, False
+    signal_gated = (not needs_robust) and (eq in EQ_TO_TV_SOUNDMODE
+                                           or eq in EQ_SOUNDBAR_ONLY)
+    if signal_gated:
+        present, exposed = _wait_audio_signal(
+            _num(AUDIO_SIGNAL_WAIT_HELPER, AUDIO_SIGNAL_WAIT_DEFAULT))
+        if not present:
+            if exposed:
+                log.warning("av_reconcile[%s]: audio still NO SIGNAL after wait "
+                            "-- writing eq %s anyway (may be rejected)",
+                            activity, eq_label)
+            else:
+                log.info("av_reconcile[%s]: audio_source attribute not exposed "
+                         "(deploy the integration update for the signal gate) "
+                         "-- proceeding on timer", activity)
+
     # 5) Sound mode: TV root for the four mapping eqs (drives the soundbar in one
     #    shot + fixes the TV's per-input memory); soundbar-side for Clear Voice. Run
     #    on both paths -- on the robust path it reinforces (durably, at the TV root)
@@ -692,22 +725,11 @@ def av_tv_reconcile(activity=None, reset=False):
         # (ai_sound is driven by TV-root only and skips this -- its upmix switch is
         # unavailable BY DESIGN, so a soundbar-direct write / readback here is moot.)
         if eq != "ai_sound" and eq_label:
-            # Change A: gate the eq write on a real incoming stream. On a fast
-            # cold wake the media_player is already on/ARC while audio_source is
-            # still NO SIGNAL, and a select_sound_mode then is silently rejected --
-            # the bar reverts to its wake default (AI Sound Pro) within ~180 ms and
-            # never reasserts. Wait for PCM/Dolby first, then write.
-            present, exposed = _wait_audio_signal(
-                _num(AUDIO_SIGNAL_WAIT_HELPER, AUDIO_SIGNAL_WAIT_DEFAULT))
-            if not present:
-                if exposed:
-                    log.warning("av_reconcile[%s]: audio still NO SIGNAL after wait "
-                                "-- writing eq %s anyway (may be rejected)",
-                                activity, eq_label)
-                else:
-                    log.info("av_reconcile[%s]: audio_source attribute not exposed "
-                             "(deploy the integration update for the signal gate) "
-                             "-- proceeding on timer", activity)
+            # Change A: the eq write is gated on a real incoming stream (the wait
+            # ran at step 4c, before the TV-root write). On a fast cold wake the
+            # media_player is already on/ARC while audio_source is still NO SIGNAL,
+            # and a select_sound_mode then is silently rejected -- the bar reverts
+            # to its wake default (AI Sound Pro) within ~180 ms and never reasserts.
             _apply_soundbar_eq(activity, eq_label,
                                "signal-gated" if present else "no-signal fallback")
             # Reassert once after the stream has held steady, to survive a

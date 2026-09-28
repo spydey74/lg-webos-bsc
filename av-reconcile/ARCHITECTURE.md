@@ -89,6 +89,7 @@ The **sole network‑mode audio controller**. Deploy: copy to `/config/pyscript/
    + a cold settle recheck (IR works whenever the bar has power, unlike the TV/eARC channel).
    h7 failure → `av_cold_boot_<activity>` notification. **If it's already on `ARC`** → the
    engine's own TV‑primary writes (steps 5–6) own it.
+4c. **Signal gate before the first eq write (TV‑primary path, 2026‑09‑28).** Wait for the soundbar's `audio_source` to show a real stream (`input_number.av_audio_signal_wait_seconds`, default 20 s) **before** step 5, not just before the step‑6 soundbar write. A TV `soundMode` written pre‑signal lands, then the bar reverts to its wake eq a few seconds later — the nightly Batocera(AI Sound Pro)→NLZiet(Standard) flip‑flop + drift notification seen 09‑20..09‑28. Warm switches already have a stream and clear on the first poll.
 5. **Sound mode:** TV `set_settings(sound,{soundMode})` for the 4 mapping eqs; soundbar `select_sound_mode` for Clear Voice (no TV equivalent). Runs on **both** paths — on the robust path it reinforces (durably, TV‑root) the eq h7 just set.
 6. **AI upmix + Clear Voice — TV‑primary path only** (`if not needs_robust`; on the robust path h7 already set eq+upmix on the soundbar with its own verify/retry/IR). Upmix via soundbar `switch.living_room_lg_soundbar_ai_upmix` (skipped when eq = ai_sound). **AI Sound Pro takes the switch entity `unavailable`, not just locked**, so on a switch *away* from ai_sound `_set_upmix` first **waits for the switch to come back available** (`input_number.av_upmix_unlock_timeout_seconds`, default 8 s, dashboard‑tunable), then **writes → verifies → retries** (`UPMIX_VERIFY_RETRIES` 3); notify‑only if it never un‑locks.
 7. **Volume:** `media_player.volume_set` on the **TV** — applied **once**, the first time `external_arc` is confirmed in the settle loop, then **never re‑asserted** (user‑adjustable). On the robust path h7 already set the soundbar volume; this applies the eARC‑authoritative TV volume to the same target, so they converge.
@@ -110,6 +111,12 @@ soundbar drifted off the desired mode, re‑asserts: **TV `soundMode`** for
 Standard/AI Sound Pro/Bass/Custom (durable, TV‑root), **soundbar
 `select_sound_mode`** for Clear Voice. Re‑asserts AI upmix (unless AI Sound Pro).
 **Leaves volume alone.** Works in both modes (keyed off the stamp timestamp).
+**Quiet cold‑wake case (2026‑09‑28):** if the soundbar powered on < 90 s ago and the
+correction is < 30 s after the stamp, it's the expected wake‑eq revert — corrected
+silently with a `logbook.log` entry ("AV drift watch") instead of the
+`av_soundbar_drift_corrected` notification. Later/warm drifts still notify. Note the
+automation itself is excluded from the recorder (no history/logbook of its runs; only
+the last 5 traces) — the logbook entry is the durable record.
 
 ### 2e. Soundbar preset — `script.h7_soundbar_preset_native`  (**IR‑mode primary + network cold‑boot recovery**)
 The proven write→verify→retry→IR‑fallback soundbar primitive. Fields
