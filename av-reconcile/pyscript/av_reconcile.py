@@ -165,6 +165,16 @@ SOUNDBAR_REFRESH_POLL = 2.0
 # ConnectionClosedOK. Retry through the reconnect instead of aborting the run.
 SOURCE_SWITCH_RETRIES = 4
 SOURCE_SWITCH_RETRY_DELAY = 2.0
+# The retries above only cover a socket that is *reconnecting*. After a real cold boot
+# (or a TV software update) the webOS stack comes up ~35 s+ AFTER the smart-plug power
+# sensor reads on, so a 4x2 s retry window gave up 5-7 s before the TV was ready
+# (observed 2026-10-01 20:17: HDMI3 switch never retried -> TV stayed on its old
+# input; 16:38-16:59 the TV flapped for ~20 min and every activity failed likewise).
+# So first wait for the TV media_player to leave off/unavailable, then retry as before.
+TV_READY_TIMEOUT = 90.0
+TV_READY_POLL = 1.0
+TV_COLD_SETTLE = 2.5   # extra settle after a cold webOS start before the first command
+TV_DOWN_STATES = ("off", "unavailable", "unknown", "none", None)
 STABLE_HOLD_SECONDS = 3.0  # consider it settled after this long unchanged at desired
 # Ignore a transient wrong value during cold-boot eARC negotiation: only correct
 # after soundOutput has been wrong for this many consecutive polls.
@@ -237,6 +247,35 @@ def _set_tv_volume(vol_0_100):
     return level
 
 
+def _tv_is_up():
+    try:
+        return state.get(TV) not in TV_DOWN_STATES
+    except NameError:
+        return False
+
+
+def _wait_tv_ready(activity, timeout=TV_READY_TIMEOUT):
+    """Block until the TV media_player is up (webOS websocket live) or timeout. If it
+    was down on entry (cold boot / update), add a short settle after it comes up.
+    Returns True if the TV is up."""
+    if _tv_is_up():
+        return True
+    log.info("av_reconcile[%s]: TV not up yet -- waiting up to %.0fs for webOS",
+             activity, timeout)
+    waited = 0.0
+    while waited < timeout:
+        task.sleep(TV_READY_POLL)
+        waited += TV_READY_POLL
+        if _tv_is_up():
+            log.info("av_reconcile[%s]: TV up after %.0fs -- settling %.1fs",
+                     activity, waited, TV_COLD_SETTLE)
+            task.sleep(TV_COLD_SETTLE)
+            return True
+    log.warning("av_reconcile[%s]: TV still not up after %.0fs -- trying source "
+                "switch anyway", activity, timeout)
+    return False
+
+
 def _switch_source(activity, profile):
     """Switch the TV source, retrying through the cold-boot window. On a cold boot the
     webOS websocket can still be (re)connecting when ensure_tv_on returns, so the first
@@ -244,6 +283,7 @@ def _switch_source(activity, profile):
     few times (the integration reconnects within a couple of seconds); never let it
     abort the run -- a failed source switch must not take the audio reconcile down with
     it. Returns True on success."""
+    _wait_tv_ready(activity)
     for attempt in range(1, SOURCE_SWITCH_RETRIES + 1):
         try:
             if profile.get("app_id"):
