@@ -171,7 +171,9 @@ SOURCE_SWITCH_RETRY_DELAY = 2.0
 # (observed 2026-10-01 20:17: HDMI3 switch never retried -> TV stayed on its old
 # input; 16:38-16:59 the TV flapped for ~20 min and every activity failed likewise).
 # So first wait for the TV media_player to leave off/unavailable, then retry as before.
-TV_READY_TIMEOUT = 90.0
+# 2026-10-05: a full webOS cold boot took 137 s (plug on 16:46:58 -> media_player on
+# 16:49:15) and the 90 s timeout missed it by 1 s, so 180 s now.
+TV_READY_TIMEOUT = 180.0
 TV_READY_POLL = 1.0
 TV_COLD_SETTLE = 2.5   # extra settle after a cold webOS start before the first command
 TV_DOWN_STATES = ("off", "unavailable", "unknown", "none", None)
