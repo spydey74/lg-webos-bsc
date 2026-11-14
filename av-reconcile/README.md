@@ -5,7 +5,7 @@
 > README is the lighter intro.
 
 A **complement** to the existing IR/Sofabaton Activity architecture
-(`AV_Control_Handover.md`), not a replacement. For each Activity it adds a network
+(historical handover now in `../../archive/AV_Control_Handover.md`), not a replacement. For each Activity it adds a network
 path where, as long as the TV integration works, **the TV is the sole audio
 controller** and the soundbar just follows over eARC:
 

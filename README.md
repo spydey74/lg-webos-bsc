@@ -35,7 +35,8 @@ LG client:
    not response**.
 
 `launch_app` **works** on this firmware. The confirmed‑good reference for every
-call is `lg_webos_net.py` in the parent project.
+call is `lg_webos_net.py`, now in the workspace `archive/` folder
+(`../archive/lg_webos_net.py`) — the integration supersedes it.
 
 ---
 
@@ -192,7 +193,7 @@ be playing over eARC).
   modified.
 - **HDMI input switching is opt‑in and OFF by default.** A network `switchInput`
   near the audio path can trigger the soundbar eARC/DAFC EQ drift (see the
-  parent project's `AV_Control_Handover.md` §8). Enable it in the integration
+  EQ‑drift investigation in `../archive/AV_Control_Handover.md` §8). Enable it in the integration
   **options** only if you accept that risk; it is never auto‑fired.
 - **TV volume ≠ audible level.** Audio is eARC to the soundbar — expose TV volume
   but keep it out of audio‑level automation.
