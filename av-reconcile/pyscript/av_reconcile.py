@@ -46,6 +46,8 @@ integration installed) and run pyscript.reload. Data-only until an Activity
 script's network branch calls it.
 """
 
+import datetime
+
 # --- entities (confirmed live) -----------------------------------------------
 TV = "media_player.lg_webos_tv_oled83g67lw"
 AUDIO = "sensor.lg_webos_tv_oled83g67lw_audio_settings"  # has soundOutput attr
@@ -177,6 +179,14 @@ TV_READY_TIMEOUT = 180.0
 TV_READY_POLL = 1.0
 TV_COLD_SETTLE = 2.5   # extra settle after a cold webOS start before the first command
 TV_DOWN_STATES = ("off", "unavailable", "unknown", "none", None)
+# LG screensaver (clock, ~3 min after an app idles): the TV is on, pingable and accepts
+# commands (34-38 W vs 6-8 W real standby), but the TV media_player reads 'off' until it
+# is dismissed. Waiting for it to leave 'off' cost the full 180 s (observed 2026-10-18
+# 22:22 Kodi: waited 180 s, then the source switch worked first try). A TV whose power
+# sensor has been on this long is not cold-booting, so skip the wait and switch at once.
+TV_POWER_PLUG = "binary_sensor.tv_power_status"
+TV_PING = "binary_sensor.192_168_1_245"
+SCREENSAVER_MIN_ON_SECONDS = 300.0
 STABLE_HOLD_SECONDS = 3.0  # consider it settled after this long unchanged at desired
 # Ignore a transient wrong value during cold-boot eARC negotiation: only correct
 # after soundOutput has been wrong for this many consecutive polls.
@@ -256,11 +266,31 @@ def _tv_is_up():
         return False
 
 
+def _tv_in_screensaver():
+    """True when the TV media_player reads down but the TV is demonstrably awake: the
+    plug power sensor has been on for SCREENSAVER_MIN_ON_SECONDS and the TV answers
+    ping. That is the LG screensaver, not a cold boot (a boot has the plug on for
+    well under that when we get here)."""
+    try:
+        if state.get(TV_POWER_PLUG) != "on" or state.get(TV_PING) != "on":
+            return False
+        changed = state.get(TV_POWER_PLUG + ".last_changed")
+        age = (datetime.datetime.now(datetime.timezone.utc) - changed).total_seconds()
+        return age >= SCREENSAVER_MIN_ON_SECONDS
+    except Exception:
+        return False
+
+
 def _wait_tv_ready(activity, timeout=TV_READY_TIMEOUT):
     """Block until the TV media_player is up (webOS websocket live) or timeout. If it
     was down on entry (cold boot / update), add a short settle after it comes up.
     Returns True if the TV is up."""
     if _tv_is_up():
+        return True
+    if _tv_in_screensaver():
+        log.info("av_reconcile[%s]: TV media_player reads %s but plug on >%.0fs and "
+                 "pingable (screensaver) -- switching source without waiting",
+                 activity, state.get(TV), SCREENSAVER_MIN_ON_SECONDS)
         return True
     log.info("av_reconcile[%s]: TV not up yet -- waiting up to %.0fs for webOS",
              activity, timeout)
