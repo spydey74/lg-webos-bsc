@@ -1,7 +1,8 @@
 # AV Control — Architecture & Handover
 
 Single source of truth for the LG TV + LG Soundbar activity‑audio system. Written
-to let a fresh session pick up with minimal context. Last updated **2026‑08‑28**.
+to let a fresh session pick up with minimal context. Last updated **2026‑11‑14**
+(engine last changed 2026‑10‑18 — screensaver short‑circuit, §2b/§8).
 
 > Scope note: the Home Assistant side (helpers, scripts, automations, dashboard)
 > is created/edited **via MCP**, not stored in this repo. This doc + the git
@@ -64,6 +65,8 @@ reset script). The poll path already reconnects each cycle when `is_connected()`
 The **sole network‑mode audio controller**. Deploy: copy to `/config/pyscript/`
 + `pyscript.reload`. Flow per call:
 1. Switch TV source (`launch_app` HDMI pseudo‑apps / `select_source` app titles — see `PROFILES`). **Retried** (`SOURCE_SWITCH_RETRIES` 4 × `SOURCE_SWITCH_RETRY_DELAY` 2 s) and **guarded**: on a cold boot the webOS websocket can still be (re)connecting when `ensure_tv_on` returns, so the call can raise `ConnectionClosedOK` — retry through the reconnect, and never let a source‑switch failure abort the audio reconcile. (All TV‑websocket calls below — soundMode, set_sound_output, volume — are likewise guarded.)
+   - **TV‑ready wait before the switch (`_wait_tv_ready`, 2026‑09..10):** block until the TV `media_player` is up (webOS websocket live), up to `TV_READY_TIMEOUT` (now **180 s**, raised from 90 s), then add `TV_COLD_SETTLE` (2.5 s) if it was down on entry. Prevents firing `launch_app` into a still‑booting TV.
+   - **Screensaver short‑circuit (`_tv_in_screensaver`, 2026‑10‑18):** the LG clock **screensaver** (~3 min after an app idles) leaves the TV *on* (34‑38 W, pingable, accepting commands) while the TV `media_player` still reads **`off`** until dismissed. Naïvely waiting for it to leave `off` cost the full 180 s (observed 2026‑10‑18 22:22 Kodi). So before waiting, if the TV plug sensor (`binary_sensor.tv_power_status`) has been **on ≥ `SCREENSAVER_MIN_ON_SECONDS` (300 s)** *and* the TV answers ping (`binary_sensor.192_168_1_245`), treat it as screensaver‑not‑cold‑boot and **switch source immediately** without waiting. A real cold boot has the plug on for far less than 300 s when the engine reaches this point, so the two don't collide. (Related integration‑side fix: a power‑threshold helper + `ensure_tv_on`/`av_reconcile.py` changes on 2026‑10‑18 so the TV entity no longer mis‑reads the screensaver as "off".)
 2. **Headphones guard** (`binary_sensor.tv_bluetooth_headphones` on): set TV volume to `input_number.av_bluetooth_headphone_volume`, leave soundbar alone, stop.
 3. Read desired eq (`input_select.av_sound_mode_<activity>`) + upmix (`input_boolean.av_ai_upmix_<activity>`).
 4. **Stamp** the drift‑watch desired state (calls `script.av_stamp_desired_audio`).
@@ -299,10 +302,28 @@ control on Bluetooth, so no mode handling there.
 
 ---
 
-## 8. Validation status (2026‑09‑04)
+## 8. Validation status (updated 2026‑11‑14)
 Network‑mode TV‑primary refactor live; NLZiet + Batocera validated live (source/mode/
 upmix/volume correct, manual volume sticks); other 8 rolled out, shield spot‑checked.
 Fixes since, newest first:
+- **2026‑10‑18 — LG screensaver no longer costs a 180 s stall.** The clock screensaver (~3 min
+  idle) keeps the TV on (34‑38 W, pingable) but the TV `media_player` read `off`, so `_wait_tv_ready`
+  waited the full 180 s before switching source (observed 22:22 Kodi). Fix (`av_reconcile.py`,
+  `_tv_in_screensaver`, §2b step 1): if the plug sensor has been on ≥ 300 s and the TV pings, skip
+  the wait and switch at once. Paired integration‑side fix the same day (power‑threshold helper +
+  `ensure_tv_on`) so the TV entity stops mis‑reading the screensaver as off. **Note:** the engine
+  change is deployed live to `/config/pyscript/` but is still **uncommitted in the repo** as of
+  2026‑11‑14 (git HEAD `6e3cb34`); commit before relying on git as the record.
+- **2026‑09‑28 — signal‑gated cold‑start eq + discrete soundbar pre‑position (+ crash fix).** The
+  TV‑root `soundMode` write is now gated on the soundbar reporting a real `audio_source` stream
+  (§4c) so a pre‑signal write can't be reverted to the wake eq, and the soundbar is pre‑positioned
+  directly on the robust path. Also fixed a run‑aborting `NameError` on a missing numeric helper
+  (`_num` guard) and quieted a false upmix alarm. TV‑ready wait added before the source switch and
+  its timeout raised 90 s → 180 s.
+- **2026‑09‑09 — NLZiet cold‑settle fix VALIDATED.** The signal‑gate + pre‑position + ARC‑at‑teardown
+  combination was confirmed on 4+ cold boots (incl. a synthetic Wi‑Fi→ARC proof); the nightly
+  Batocera(AI Sound Pro)→NLZiet(Standard) flip‑flop + spurious drift notification is gone. Debug
+  logging removed; integration/engine line at this point corresponds to `lg_soundbar_plus` 0.1.11.
 - **2026‑09‑06 (later³) — cold‑boot: TV‑primary path now has a soundbar‑direct eq fallback.**
   NLZiet cold start (21:04) after Batocera left the soundbar in **AI Sound Pro**. The engine took
   the TV‑primary path and asserted `TV soundMode=standard`, but on this cold boot the soundbar

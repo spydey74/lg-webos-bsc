@@ -178,7 +178,7 @@ be playing over eARC).
 | `get_software_info` (sw version) | **NOT AVAILABLE** — 401 |
 | Remote key presses (`button()`) | **CONFIRMED** (HOME verified live; input socket works with the fresh key) |
 | SSDP discovery | **CONFIRMED** (dedupes against the already-configured TV) |
-| Push state updates (subscriptions) | **CONFIRMED** — volume/app/input push in <1 s; no connect hang |
+| Push state updates (subscriptions) | **DISABLED since 0.1.7** — push worked (<1 s) but its teardown wedged the socket on this firmware; now pure-poll (~5 s). See sec.5 |
 | Notify (on-screen toast) | **LIKELY** — `send_message`, not yet verified live |
 | Game genre **read‑back** | **NOT AVAILABLE** — `getSystemSettings` 500s; the select shows the last value set this session |
 
@@ -207,24 +207,34 @@ be playing over eARC).
 
 ---
 
-## State updates: hybrid push + poll (sec.5)
+## State updates: pure polling (sec.5)
 
-Like Home Assistant's core `webostv`, this integration is **push-first**:
+**As of 0.1.7 this integration is pure-polling — push/subscription mode is
+disabled.** It polls a curated scalar set (`power`, `current_app`, `muted`,
+`volume`, `sound_output`, audio/picture settings) every ~5 s. Remote-driven
+changes (volume, HDMI switches, power) therefore reflect in HA on the next poll
+(~5 s) rather than sub-second, which is irrelevant here because the AV reconcile
+engine drives all source/audio changes itself and does not depend on push latency.
 
-- It subscribes to a curated scalar set (`power`, `current_app`, `muted`,
-  `volume`, `sound_output`) via `register_state_update_callback`, so changes made
-  with the physical remote (volume, HDMI switches, power) reflect in HA within a
-  fraction of a second — verified on webOS 26 (`tools/subscription_probe.py`).
-- The periodic poll becomes a **reconnect heartbeat** that also refreshes the
-  bits we don't subscribe (apps/inputs list, `system_info`, picture settings).
-- `bscpylgtv` awaits subscription setup with **no timeout**, so a silently-dropped
-  subscription could hang `connect()`. We bound it (20 s) and **automatically fall
-  back to pure polling** for the session if that happens — zero regression.
-- We deliberately do **not** subscribe `system_info`/`software_info` (static;
-  `software_info` 401s) or `apps`/`inputs` (their subscribed shape differs).
 - The canonical manifest is re-applied on **every** (re)connect; the input socket
   is lazy so it can't abort connect; a merely-off/unreachable TV is reported
   **off**, not unavailable, and detected within ~2 s.
+- Each poll reconnects if `is_connected()` is False, and a websockets-level
+  keepalive shim (`patch.py`, 0.1.5) plus whole-cycle timeouts (0.1.4) ensure a
+  dead/half-open socket is rebuilt rather than wedging the coordinator loop.
+
+> **Why push was disabled (0.1.7, 2026-09-06).** The earlier hybrid push+poll
+> model worked day-to-day (subscriptions fired in <1 s) but the push *teardown*
+> path repeatedly wedged on this webOS 26 firmware: six distinct reconnect/hang
+> failures (2026-09-04..06) all lived in the subscription machinery
+> (`_on_push` racing `disconnect()`'s cancel of bscpylgtv's callback generator,
+> connect awaiting subscription setup). Rather than keep patching it, push mode
+> was switched off at coordinator init (`_push_mode = False`). Polling removes
+> subscriptions entirely — simpler connect, quiet teardown — and has run clean
+> since (confirmed over a multi-day window incl. overnight cold boots). The
+> subscription code is retained but dormant; the documented fallback if polling
+> ever regresses is to migrate the client onto `aiowebostv` (see the
+> `av-reconcile/PATH-C-DECISION.md` record).
 
 ---
 
